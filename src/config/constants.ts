@@ -1,0 +1,15 @@
+export const BOOKING_CONFIRMATION_WINDOW_MINUTES_SAME_DAY = 10;
+export const BOOKING_CONFIRMATION_WINDOW_MINUTES_FUTURE = 15;
+export const ACCESS_TOKEN_EXPIRES_IN = '15m';
+export const REFRESH_TOKEN_EXPIRES_IN = '30d';
+export const REDIS_TIMER_PREFIX = 'booking:timer:';
+export const OPS_ALERT_QUEUE = 'ops.alerts';
+export const BOOKING_EVENTS_QUEUE = 'booking.events';
+export const BOOKING_EVENTS_EXCHANGE = 'booking.exchange';
+export const PAYOUT_QUEUE_NAME = 'payout.sweep';
+export const ESCALATION_QUEUE_NAME = 'booking.escalation';
+export const CALENDAR_SYNC_QUEUE_NAME = 'calendar.sync';
+export const EMAIL_OTP_LENGTH = 6;
+export const EMAIL_OTP_EXPIRY_MINUTES = 10;
+export const EMAIL_OTP_MAX_ATTEMPTS = 5;
+export const EMAIL_OTP_RESEND_COOLDOWN_SECONDS = 60;
