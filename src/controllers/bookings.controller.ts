@@ -5,10 +5,12 @@ import {
   createBookingFromPropertyRequest,
   createBookingRequest,
   decideBookingByHost,
+  confirmBookingPreauthorization,
   getBookingApiDetails,
   getBookingApiStatus,
   listBookings,
   getBookingStats,
+  initializeBookingPreauthorization,
   cancelBooking,
   confirmBookingPayment,
   markBookingCheckedIn,
@@ -37,6 +39,7 @@ export async function createBookingController(req: Request, res: Response): Prom
     propertyId?: string;
     roomType?: string;
     nightlyRate?: number;
+    paymentMethod?: 'card' | 'bank_transfer' | 'transfer';
   };
 
   if (body.propertyId) {
@@ -47,6 +50,7 @@ export async function createBookingController(req: Request, res: Response): Prom
       checkOut: body.checkOut,
       roomType: body.roomType,
       nightlyRate: body.nightlyRate,
+      paymentMethod: body.paymentMethod,
     });
 
     res.status(201).json(result);
@@ -58,9 +62,53 @@ export async function createBookingController(req: Request, res: Response): Prom
     unitId: body.unitId,
     checkIn: body.checkIn,
     checkOut: body.checkOut,
+    paymentMethod: body.paymentMethod,
   });
 
   res.status(201).json(result);
+}
+
+export async function initializeBookingPreauthorizationController(req: Request, res: Response): Promise<void> {
+  const body = req.body as {
+    propertyId: string;
+    checkIn: string;
+    checkOut: string;
+    guestCount?: number;
+    roomType?: string;
+    nightlyRate?: number;
+    firstName?: string;
+    lastName?: string;
+    email?: string;
+    phone?: string;
+    amount?: number;
+    currency?: string;
+    reference?: string;
+    paymentMethod?: 'card' | 'bank_transfer' | 'transfer';
+  };
+
+  const result = await initializeBookingPreauthorization({
+    guestId: req.user!.userId,
+    propertyId: body.propertyId,
+    checkIn: body.checkIn,
+    checkOut: body.checkOut,
+    roomType: body.roomType,
+    nightlyRate: body.nightlyRate,
+    paymentMethod: body.paymentMethod,
+  });
+
+  res.status(201).json(result);
+}
+
+export async function confirmBookingPreauthorizationController(req: Request, res: Response): Promise<void> {
+  const body = req.body as { reference: string };
+
+  const result = await confirmBookingPreauthorization({
+    reference: body.reference,
+    requesterId: req.user!.userId,
+    requesterRole: req.user!.role === 'admin' ? 'admin' : 'guest',
+  });
+
+  res.status(200).json(result);
 }
 
 export async function confirmBookingPaymentController(req: Request, res: Response): Promise<void> {
@@ -176,15 +224,19 @@ export async function paystackWebhookController(req: Request, res: Response): Pr
     };
   };
 
-  const isChargeSuccess = payload.event === 'charge.success';
+  const event = String(payload.event ?? '').toLowerCase();
+  const isChargeSuccess = event === 'charge.success';
+  const isPreauthReserveSuccess = event === 'preauthorization.reserve.success';
   const reference = payload.data?.reference;
   const status = String(payload.data?.status ?? '').toLowerCase();
   const eventId = String(payload.data?.id ?? '').trim();
 
-  if (!isChargeSuccess || status !== 'success' || !reference || !eventId) {
+  const isSuccessStatus = status === 'success' || status === 'authorized';
+
+  if ((!isChargeSuccess && !isPreauthReserveSuccess) || !isSuccessStatus || !reference || !eventId) {
     logger.info(
       {
-        event: payload.event,
+        event,
         status: payload.data?.status,
         hasReference: Boolean(reference),
       },
@@ -196,7 +248,7 @@ export async function paystackWebhookController(req: Request, res: Response): Pr
 
   const result = await confirmBookingPaymentFromWebhook({
     paystackReference: reference,
-    webhookId: `paystack:${eventId}`,
+    webhookId: `paystack:${event}:${eventId}`,
   });
 
   res.status(200).json({ ok: true, ...result });

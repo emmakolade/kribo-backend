@@ -1,11 +1,12 @@
 import { Types } from 'mongoose';
 import { REDIS_TIMER_PREFIX } from '../config/constants';
+import { env } from '../config/env';
 import { redis } from '../config/redis';
 import { BookingModel } from '../models/booking.model';
 import { PropertyModel } from '../models/property.model';
 import { UnitModel } from '../models/unit.model';
 import { UserModel } from '../models/user.model';
-import { createBooking, findBookingById, setBookingWebhookProcessed, updateBookingStatus } from '../repositories/bookings.repository';
+import { createBooking, findBookingById, findBookingByPaystackReference, setBookingWebhookProcessed, updateBookingStatus } from '../repositories/bookings.repository';
 import { findUserById } from '../repositories/users.repository';
 import { publishBookingEvent } from '../queue/bookingEvents.producer';
 import { BookingStatus, canTransition } from '../types/booking';
@@ -48,6 +49,14 @@ interface BookingApiView {
     cleaningFee: number;
     total: number;
   };
+}
+
+function isCardPaymentMethod(paymentMethod?: string): boolean {
+  return !paymentMethod || paymentMethod === 'card';
+}
+
+function isTransferLikePaymentMethod(paymentMethod?: string): boolean {
+  return paymentMethod === 'bank_transfer' || paymentMethod === 'transfer';
 }
 
 function toBookingApiStatus(status: BookingStatus): BookingApiStatus {
@@ -112,7 +121,9 @@ async function mapToBookingApiView(booking: {
   const checkIn = new Date(booking.checkIn);
   const checkOut = new Date(booking.checkOut);
   const nights = Math.max(1, dateRange(checkIn, checkOut).length);
-  const nightlyRate = unit?.pricePerNight ?? Math.max(0, Math.round(booking.totalAmount / nights));
+  const bookingServiceFee = env.BOOKING_SERVICE_FEE_NGN;
+  const baseAmount = Math.max(0, booking.totalAmount - bookingServiceFee);
+  const nightlyRate = unit?.pricePerNight ?? Math.max(0, Math.round(baseAmount / nights));
   const bookingId = String(booking._id);
   const ttlSeconds = await getBookingTtlSeconds(bookingId, booking.status);
   const nameParts = splitNameParts(guest?.name ?? '');
@@ -136,7 +147,7 @@ async function mapToBookingApiView(booking: {
     priceBreakdown: {
       nightlyRate,
       nights,
-      serviceFee: 0,
+      serviceFee: bookingServiceFee,
       cleaningFee: 0,
       total: booking.totalAmount,
     },
@@ -196,6 +207,7 @@ export async function createBookingRequest(input: {
   unitId: string;
   checkIn: string;
   checkOut: string;
+  paymentMethod?: 'card' | 'bank_transfer' | 'transfer';
 }): Promise<{ bookingId: string; status: BookingStatus; paystackReference: string; paystackCheckoutUrl: string }> {
   const guest = await findUserById(input.guestId);
   if (!guest) {
@@ -219,21 +231,28 @@ export async function createBookingRequest(input: {
   const checkIn = new Date(input.checkIn);
   const checkOut = new Date(input.checkOut);
   const nights = Math.max(1, dateRange(checkIn, checkOut).length);
-  const totalAmount = unit.pricePerNight * nights;
-  const commissionAmount = calculateCommission(totalAmount);
-  const payoutAmount = calculatePayout(totalAmount);
+  const bookingSubtotal = unit.pricePerNight * nights;
+  const serviceFee = env.BOOKING_SERVICE_FEE_NGN;
+  const totalAmount = bookingSubtotal + serviceFee;
+  const commissionAmount = calculateCommission(bookingSubtotal);
+  const payoutAmount = calculatePayout(bookingSubtotal);
 
-
-  const preauth = await paystackService.initializePreauth({
+  const checkoutPayload = {
     amount: totalAmount,
     email: guest.email,
+    currency: 'NGN',
     metadata: {
       guestId: input.guestId,
       unitId: input.unitId,
       checkIn: input.checkIn,
       checkOut: input.checkOut,
     },
-  });
+    callbackUrl: env.PAYSTACK_BOOKING_CALLBACK_URL,
+  };
+
+  const checkout = isCardPaymentMethod(input.paymentMethod)
+    ? await paystackService.initializePreauth(checkoutPayload)
+    : await paystackService.initializeTransaction(checkoutPayload);
 
   const booking = await createBooking({
     guestId: new Types.ObjectId(input.guestId),
@@ -245,7 +264,8 @@ export async function createBookingRequest(input: {
     commissionAmount,
     payoutAmount,
     status: BookingStatus.PENDING,
-    paystackReference: preauth.reference,
+    paystackReference: checkout.reference,
+    paymentMethod: input.paymentMethod ?? 'card',
     stateHistory: ([{ status: BookingStatus.PENDING, timestamp: new Date() }] as unknown) as never,
   });
 
@@ -253,8 +273,8 @@ export async function createBookingRequest(input: {
   return {
     bookingId: String(booking._id),
     status: booking.status,
-    paystackReference: preauth.reference,
-    paystackCheckoutUrl: preauth.authorizationUrl,
+    paystackReference: checkout.reference,
+    paystackCheckoutUrl: checkout.authorizationUrl,
   };
 }
 
@@ -265,6 +285,7 @@ export async function createBookingFromPropertyRequest(input: {
   checkOut: string;
   roomType?: string;
   nightlyRate?: number;
+  paymentMethod?: 'card' | 'bank_transfer' | 'transfer';
 }): Promise<{ bookingId: string; status: BookingStatus; paystackReference: string; paystackCheckoutUrl: string }> {
   const unitId = await resolveUnitForPropertyBooking({
     propertyId: input.propertyId,
@@ -277,7 +298,125 @@ export async function createBookingFromPropertyRequest(input: {
     unitId,
     checkIn: input.checkIn,
     checkOut: input.checkOut,
+    paymentMethod: input.paymentMethod,
   });
+}
+
+export async function initializeBookingPreauthorization(input: {
+  guestId: string;
+  propertyId: string;
+  checkIn: string;
+  checkOut: string;
+  roomType?: string;
+  nightlyRate?: number;
+  paymentMethod?: 'card' | 'bank_transfer' | 'transfer';
+}): Promise<{
+  bookingId: string;
+  reference: string;
+  accessCode: string;
+  checkoutUrl: string;
+  amount: number;
+  currency: 'NGN';
+  status: BookingStatus;
+}> {
+  const checkout = await createBookingFromPropertyRequest({
+    guestId: input.guestId,
+    propertyId: input.propertyId,
+    checkIn: input.checkIn,
+    checkOut: input.checkOut,
+    roomType: input.roomType,
+    nightlyRate: input.nightlyRate,
+    paymentMethod: input.paymentMethod,
+  });
+
+  const booking = await findBookingById(checkout.bookingId);
+  if (!booking) {
+    throw new AppError('Booking not found after initialization', 500, 'BOOKING_INIT_FAILED');
+  }
+
+  const checkoutUrl = new URL(checkout.paystackCheckoutUrl);
+  const pathSegments = checkoutUrl.pathname.split('/').filter(Boolean);
+  const accessCode = checkoutUrl.searchParams.get('access_code') ?? pathSegments[pathSegments.length - 1] ?? null;
+  if (!accessCode) {
+    throw new AppError('Unable to resolve Paystack access code', 502, 'PAYSTACK_ACCESS_CODE_MISSING');
+  }
+
+  return {
+    bookingId: checkout.bookingId,
+    reference: checkout.paystackReference,
+    accessCode,
+    checkoutUrl: checkout.paystackCheckoutUrl,
+    amount: booking.totalAmount * 100,
+    currency: 'NGN',
+    status: booking.status,
+  };
+}
+
+export async function confirmBookingPreauthorization(input: {
+  reference: string;
+  requesterId: string;
+  requesterRole: 'guest' | 'admin';
+}): Promise<{ bookingId: string; reference: string; status: BookingStatus }> {
+  const booking = await findBookingByPaystackReference(input.reference);
+  if (!booking) {
+    throw new AppError('Booking not found for preauthorization reference', 404, 'BOOKING_NOT_FOUND');
+  }
+
+  const isAdmin = input.requesterRole === 'admin';
+  const isGuestOwner = input.requesterRole === 'guest' && String(booking.guestId) === input.requesterId;
+  if (!isAdmin && !isGuestOwner) {
+    throw new AppError('Booking not found', 404, 'BOOKING_NOT_FOUND');
+  }
+
+  if (booking.status === BookingStatus.PAYMENT_HELD) {
+    return {
+      bookingId: String(booking._id),
+      reference: input.reference,
+      status: booking.status,
+    };
+  }
+
+  if (booking.status !== BookingStatus.PENDING) {
+    throw new AppError('Booking is not awaiting preauthorization confirmation', 409, 'INVALID_BOOKING_STATE');
+  }
+
+  const isCardPayment = isCardPaymentMethod(booking.paymentMethod);
+  if (isCardPayment) {
+    const verification = await paystackService.verifyPreauth(input.reference);
+    if (!verification.authorized) {
+      throw new AppError('Preauthorization has not been completed', 409, 'PREAUTH_NOT_COMPLETED');
+    }
+  } else {
+    const verification = await paystackService.verifyTransaction(input.reference);
+    if (!verification.paid) {
+      throw new AppError('Payment has not been completed', 409, 'PAYMENT_NOT_COMPLETED');
+    }
+  }
+
+  const unit = await UnitModel.findById(booking.unitId).lean();
+  const property = unit ? await PropertyModel.findById(unit.propertyId).lean() : null;
+  const isTransferLike = isTransferLikePaymentMethod(booking.paymentMethod);
+  const bypassHostConfirmation = Boolean(isTransferLike && property?.instantBookEligible);
+
+  if (bypassHostConfirmation) {
+    await transitionBooking(String(booking._id), BookingStatus.CONFIRMED);
+    return {
+      bookingId: String(booking._id),
+      reference: input.reference,
+      status: BookingStatus.CONFIRMED,
+    };
+  }
+
+  await transitionBooking(String(booking._id), BookingStatus.PAYMENT_HELD);
+  await publishBookingEvent('booking.pending', {
+    bookingId: String(booking._id),
+  });
+
+  return {
+    bookingId: String(booking._id),
+    reference: input.reference,
+    status: BookingStatus.PAYMENT_HELD,
+  };
 }
 
 export async function confirmBookingPayment(input: {
@@ -304,8 +443,16 @@ export async function confirmBookingPayment(input: {
     throw new AppError('Booking is not awaiting payment confirmation', 409, 'INVALID_BOOKING_STATE');
   }
 
-  const verification = await paystackService.verifyTransaction(booking.paystackReference);
-  if (!verification.paid) {
+  let paid = false;
+  try {
+    const preauth = await paystackService.verifyPreauth(booking.paystackReference);
+    paid = preauth.authorized;
+  } catch {
+    const transaction = await paystackService.verifyTransaction(booking.paystackReference);
+    paid = transaction.paid;
+  }
+
+  if (!paid) {
     throw new AppError('Payment has not been completed', 409, 'PAYMENT_NOT_COMPLETED');
   }
 
@@ -492,10 +639,20 @@ export async function processHostDecision(input: {
   }
 
   if (input.decision === 'accept') {
-    await paystackService.capturePreauth(booking.paystackReference);
+    if (isCardPaymentMethod(booking.paymentMethod)) {
+      await paystackService.capturePreauth({
+        reference: booking.paystackReference,
+        amount: booking.totalAmount,
+        currency: 'NGN',
+      });
+    }
     await transitionBooking(input.bookingId, BookingStatus.CONFIRMED);
   } else {
-    await paystackService.releasePreauth(booking.paystackReference);
+    if (isCardPaymentMethod(booking.paymentMethod)) {
+      await paystackService.releasePreauth(booking.paystackReference);
+    } else {
+      await paystackService.refundTransaction(booking.paystackReference);
+    }
     await transitionBooking(input.bookingId, BookingStatus.DECLINED);
   }
 
@@ -529,7 +686,13 @@ export async function acceptBookingByHost(input: {
     return { status: booking.status };
   }
 
-  await paystackService.capturePreauth(booking.paystackReference);
+  if (isCardPaymentMethod(booking.paymentMethod)) {
+    await paystackService.capturePreauth({
+      reference: booking.paystackReference,
+      amount: booking.totalAmount,
+      currency: 'NGN',
+    });
+  }
   await transitionBooking(input.bookingId, BookingStatus.CONFIRMED);
 
   return { status: BookingStatus.CONFIRMED };
@@ -566,10 +729,20 @@ export async function decideBookingByHost(input: {
   }
 
   if (input.action === 'accept') {
-    await paystackService.capturePreauth(booking.paystackReference);
+    if (isCardPaymentMethod(booking.paymentMethod)) {
+      await paystackService.capturePreauth({
+        reference: booking.paystackReference,
+        amount: booking.totalAmount,
+        currency: 'NGN',
+      });
+    }
     await transitionBooking(input.bookingId, BookingStatus.CONFIRMED);
   } else {
-    await paystackService.releasePreauth(booking.paystackReference);
+    if (isCardPaymentMethod(booking.paymentMethod)) {
+      await paystackService.releasePreauth(booking.paystackReference);
+    } else {
+      await paystackService.refundTransaction(booking.paystackReference);
+    }
     await transitionBooking(input.bookingId, BookingStatus.DECLINED);
   }
 
@@ -664,7 +837,11 @@ export async function cancelBooking(
   }
 
   if (booking.status === BookingStatus.PAYMENT_HELD) {
-    await paystackService.releasePreauth(booking.paystackReference);
+    if (isCardPaymentMethod(booking.paymentMethod)) {
+      await paystackService.releasePreauth(booking.paystackReference);
+    } else {
+      await paystackService.refundTransaction(booking.paystackReference);
+    }
   }
 
   await transitionBooking(bookingId, to);
@@ -679,7 +856,17 @@ export async function escalateExpiredBookings(): Promise<number> {
     const key = `${REDIS_TIMER_PREFIX}${String(booking._id)}`;
     const exists = await redis.exists(key);
     if (!exists) {
-      await transitionBooking(String(booking._id), BookingStatus.ESCALATED);
+      try {
+        if (isCardPaymentMethod(booking.paymentMethod)) {
+          await paystackService.releasePreauth(booking.paystackReference);
+        } else {
+          await paystackService.refundTransaction(booking.paystackReference);
+        }
+      } catch (error) {
+        logger.error({ err: error, bookingId: String(booking._id) }, 'failed to release preauthorization on timeout');
+      }
+
+      await transitionBooking(String(booking._id), BookingStatus.DECLINED);
       escalated += 1;
     }
   }

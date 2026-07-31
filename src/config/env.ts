@@ -13,6 +13,7 @@ const envSchema = z.object({
   PAYSTACK_SECRET_KEY: z.string().min(1),
   PAYSTACK_BASE_URL: z.url(),
   PAYSTACK_WEBHOOK_URL: z.url().optional(),
+  PAYSTACK_BOOKING_CALLBACK_URL: z.url().optional(),
   TWILIO_ACCOUNT_SID: z.string().min(1),
   TWILIO_AUTH_TOKEN: z.string().min(1),
   TWILIO_WHATSAPP_FROM: z.string().min(1),
@@ -31,6 +32,7 @@ const envSchema = z.object({
   EMAIL_OTP_SECRET: z.string().min(12).optional(),
   COMMISSION_RATE: z.coerce.number().min(0).max(1).default(0.12),
   PAYOUT_HOLD_DAYS: z.coerce.number().int().min(0).default(1),
+  BOOKING_SERVICE_FEE_NGN: z.coerce.number().int().min(0).default(2000),
 });
 
 const parsed = envSchema.safeParse(process.env);

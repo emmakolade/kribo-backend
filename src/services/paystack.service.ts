@@ -1,15 +1,32 @@
-import axios from 'axios';
+import axios, { isAxiosError } from 'axios';
 import crypto from 'crypto';
 import { env } from '../config/env';
+import { AppError } from '../utils/AppError';
 
 export interface PaystackService {
+  initializeTransaction(input: {
+    amount: number;
+    email: string;
+    metadata: Record<string, unknown>;
+    callbackUrl?: string;
+    currency?: string;
+    reference?: string;
+  }): Promise<{ reference: string; authorizationUrl: string; accessCode: string }>;
   initializePreauth(input: {
     amount: number;
     email: string;
     metadata: Record<string, unknown>;
-  }): Promise<{ reference: string; authorizationUrl: string }>;
-  capturePreauth(reference: string): Promise<{ reference: string; status: 'captured' }>;
+    callbackUrl?: string;
+    currency?: string;
+    reference?: string;
+  }): Promise<{ reference: string; authorizationUrl: string; accessCode: string }>;
+  capturePreauth(input: {
+    reference: string;
+    amount: number;
+    currency?: string;
+  }): Promise<{ reference: string; status: 'captured' }>;
   releasePreauth(reference: string): Promise<{ reference: string; status: 'released' }>;
+  refundTransaction(reference: string): Promise<{ reference: string; status: 'refunded' }>;
   transferToHost(input: {
     amount: number;
     recipientCode: string;
@@ -20,6 +37,7 @@ export interface PaystackService {
     bankCode: string;
   }): Promise<{ accountNumber: string; accountName: string; bankCode: string }>;
   listBanks(): Promise<Array<{ name: string; code: string }>>;
+  verifyPreauth(reference: string): Promise<{ reference: string; status: string; authorized: boolean }>;
   verifyTransaction(reference: string): Promise<{ reference: string; paid: boolean }>;
   verifyWebhookSignature(input: { rawBody: string; signature?: string }): boolean;
 }
@@ -33,31 +51,120 @@ class LivePaystackService implements PaystackService {
     },
   });
 
+  private throwPaystackError(error: unknown, fallbackMessage: string, fallbackCode: string): never {
+    if (isAxiosError(error)) {
+      const statusCode = error.response?.status ?? 502;
+      const responseData = error.response?.data as { message?: unknown; code?: unknown } | undefined;
+      const message = typeof responseData?.message === 'string' && responseData.message.trim().length > 0
+        ? responseData.message
+        : fallbackMessage;
+
+      const normalized = message.toLowerCase();
+      if (statusCode === 403 && normalized.includes('not eligible for preauthorization')) {
+        throw new AppError(
+          'Paystack preauthorization is not enabled on this merchant account. Contact Paystack support to enable it for your business profile.',
+          422,
+          'PAYSTACK_PREAUTH_NOT_ENABLED',
+        );
+      }
+
+      throw new AppError(message, statusCode >= 400 && statusCode < 600 ? statusCode : 502, fallbackCode);
+    }
+
+    throw new AppError(fallbackMessage, 502, fallbackCode);
+  }
+
+  public async initializeTransaction(input: {
+    amount: number;
+    email: string;
+    metadata: Record<string, unknown>;
+    callbackUrl?: string;
+    currency?: string;
+    reference?: string;
+  }): Promise<{ reference: string; authorizationUrl: string; accessCode: string }> {
+    try {
+      const { data } = await this.client.post('/transaction/initialize', {
+        amount: input.amount * 100,
+        email: input.email,
+        currency: input.currency ?? 'NGN',
+        reference: input.reference,
+        metadata: input.metadata,
+        callback_url: input.callbackUrl,
+      });
+
+      return {
+        reference: data.data.reference as string,
+        authorizationUrl: data.data.authorization_url as string,
+        accessCode: data.data.access_code as string,
+      };
+    } catch (error) {
+      this.throwPaystackError(error, 'Unable to initialize Paystack checkout', 'PAYSTACK_CHECKOUT_INIT_FAILED');
+    }
+  }
+
   public async initializePreauth(input: {
     amount: number;
     email: string;
     metadata: Record<string, unknown>;
-  }): Promise<{ reference: string; authorizationUrl: string }> {
-    const { data } = await this.client.post('/transaction/initialize', {
-      amount: input.amount * 100,
-      email: input.email,
-      metadata: input.metadata,
-    });
+    callbackUrl?: string;
+    currency?: string;
+    reference?: string;
+  }): Promise<{ reference: string; authorizationUrl: string; accessCode: string }> {
+    try {
+      const { data } = await this.client.post('/preauthorization/initialize', {
+        amount: input.amount * 100,
+        email: input.email,
+        currency: input.currency ?? 'NGN',
+        reference: input.reference,
+        metadata: input.metadata,
+        callback_url: input.callbackUrl,
+      });
 
-    return {
-      reference: data.data.reference as string,
-      authorizationUrl: data.data.authorization_url as string,
-    };
+      return {
+        reference: data.data.reference as string,
+        authorizationUrl: data.data.authorization_url as string,
+        accessCode: data.data.access_code as string,
+      };
+    } catch (error) {
+      this.throwPaystackError(error, 'Unable to initialize Paystack preauthorization', 'PAYSTACK_PREAUTH_INIT_FAILED');
+    }
   }
 
-  public async capturePreauth(reference: string): Promise<{ reference: string; status: 'captured' }> {
-    await this.client.post('/transaction/charge_authorization', { reference });
-    return { reference, status: 'captured' };
+  public async capturePreauth(input: {
+    reference: string;
+    amount: number;
+    currency?: string;
+  }): Promise<{ reference: string; status: 'captured' }> {
+    try {
+      await this.client.post('/preauthorization/capture', {
+        reference: input.reference,
+        amount: input.amount * 100,
+        currency: input.currency ?? 'NGN',
+      });
+      return { reference: input.reference, status: 'captured' };
+    } catch (error) {
+      this.throwPaystackError(error, 'Unable to capture preauthorization', 'PAYSTACK_PREAUTH_CAPTURE_FAILED');
+    }
   }
 
   public async releasePreauth(reference: string): Promise<{ reference: string; status: 'released' }> {
-    await this.client.post('/transaction/refund', { transaction: reference });
-    return { reference, status: 'released' };
+    try {
+      await this.client.post('/preauthorization/release', { reference });
+      return { reference, status: 'released' };
+    } catch (error) {
+      this.throwPaystackError(error, 'Unable to release preauthorization', 'PAYSTACK_PREAUTH_RELEASE_FAILED');
+    }
+  }
+
+  public async refundTransaction(reference: string): Promise<{ reference: string; status: 'refunded' }> {
+    try {
+      await this.client.post('/refund', {
+        transaction: reference,
+      });
+      return { reference, status: 'refunded' };
+    } catch (error) {
+      this.throwPaystackError(error, 'Unable to refund transaction', 'PAYSTACK_REFUND_FAILED');
+    }
   }
 
   public async transferToHost(input: {
@@ -115,6 +222,21 @@ class LivePaystackService implements PaystackService {
     const { data } = await this.client.get(`/transaction/verify/${reference}`);
     const paid = String(data.data.status).toLowerCase() === 'success';
     return { reference, paid };
+  }
+
+  public async verifyPreauth(reference: string): Promise<{ reference: string; status: string; authorized: boolean }> {
+    try {
+      const { data } = await this.client.get(`/preauthorization/verify/${reference}`);
+      const status = String(data.data.status ?? '').toLowerCase();
+      const authorized = status === 'authorized' || status === 'captured';
+      return {
+        reference,
+        status,
+        authorized,
+      };
+    } catch (error) {
+      this.throwPaystackError(error, 'Unable to verify preauthorization', 'PAYSTACK_PREAUTH_VERIFY_FAILED');
+    }
   }
 
   public verifyWebhookSignature(input: { rawBody: string; signature?: string }): boolean {

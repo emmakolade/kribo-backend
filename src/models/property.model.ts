@@ -31,6 +31,8 @@ const propertySchema = new Schema(
     },
     propertyType: { type: String, enum: PROPERTY_TYPES, required: true },
     verified: { type: Boolean, default: false },
+    instantBookEligible: { type: Boolean, default: false },
+    hostTrustTier: { type: String, enum: ['starter', 'trusted', 'top'], default: 'starter' },
   },
   { timestamps: true },
 );

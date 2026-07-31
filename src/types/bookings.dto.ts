@@ -2,6 +2,7 @@ export interface CreateBookingBodyDto {
   unitId: string;
   checkIn: string;
   checkOut: string;
+  paymentMethod?: 'card' | 'bank_transfer' | 'transfer';
 }
 
 export interface WhatsappWebhookBodyDto {

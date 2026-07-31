@@ -43,6 +43,8 @@ This document reflects the currently implemented REST endpoints in the backend.
 | DELETE | /units/:id                                      | Yes  | host                        |
 | DELETE | /units/property/:propertyId                     | Yes  | host                        |
 | POST   | /bookings                                       | Yes  | guest                       |
+| POST   | /bookings/preauth/initialize                    | Yes  | guest                       |
+| POST   | /bookings/preauth/confirm                       | Yes  | guest/admin                 |
 | POST   | /bookings/:id/confirm-payment                   | Yes  | guest/admin                 |
 | GET    | /bookings                                       | Yes  | Any                         |
 | GET    | /bookings/stats                                 | Yes  | host/admin                  |
@@ -816,6 +818,7 @@ Alternative property-first body:
   "propertyId": "688...",
   "checkIn": "2026-08-01",
   "checkOut": "2026-08-03",
+  "paymentMethod": "card",
   "roomType": "Entire 1-bedroom",
   "nightlyRate": 75000
 }
@@ -837,6 +840,79 @@ Alternative property-first body:
 - Payment flow note:
   - Open `paystackCheckoutUrl` in the client to complete payment authorization.
   - After checkout, call `POST /bookings/:id/confirm-payment` to verify and move booking to `payment_held`.
+  - Final capture is not performed here; charge capture only happens when host accepts.
+  - `paymentMethod` supports `card`, `transfer`, `ussd` for transparent checkout messaging and downstream booking behavior.
+
+### POST /bookings/preauth/initialize
+
+- Auth: required, role `guest`
+- Purpose: initialize checkout and create booking in `pending` state.
+- Method behavior:
+  - `paymentMethod=card`: initializes card preauthorization (hold, not immediate debit).
+  - `paymentMethod=transfer|ussd`: initializes standard checkout (immediate payment after guest completes transfer/USSD).
+- Body:
+
+```json
+{
+  "propertyId": "688...",
+  "checkIn": "2026-08-01",
+  "checkOut": "2026-08-03",
+  "guestCount": 2,
+  "paymentMethod": "card",
+  "roomType": "Entire 1-bedroom",
+  "nightlyRate": 75000,
+  "firstName": "Jane",
+  "lastName": "Doe",
+  "email": "jane@example.com",
+  "phone": "+2348012345678",
+  "amount": 15200000,
+  "currency": "NGN"
+}
+```
+
+- Response 201:
+
+```json
+{
+  "bookingId": "688...",
+  "reference": "pre_xxxxx",
+  "accessCode": "NDEyOTIyOmxpdmU6...",
+  "amount": 15200000,
+  "currency": "NGN",
+  "status": "pending"
+}
+```
+
+### POST /bookings/preauth/confirm
+
+- Auth: required (`guest` owner or `admin`)
+- Purpose: verify checkout completion and transition booking state.
+- Body:
+
+```json
+{
+  "reference": "pre_xxxxx"
+}
+```
+
+- Response 200:
+
+```json
+{
+  "bookingId": "688...",
+  "reference": "pre_xxxxx",
+  "status": "payment_held"
+}
+```
+
+- Flow rule:
+  - For `card`, this confirms payment hold only; final debit/capture is performed only when host accepts (`POST /bookings/:id/action` with `accept`).
+  - For `transfer|ussd`, this confirms completed payment.
+  - For non-card methods (`transfer`, `ussd`) on properties marked `instantBookEligible`, booking may be auto-confirmed after successful payment confirmation.
+
+- Timeout/decline refund rule:
+  - On host decline, release is triggered immediately.
+  - On confirmation timeout, release is also triggered immediately and booking is moved to `declined`.
 
 ### POST /bookings/:id/confirm-payment
 
