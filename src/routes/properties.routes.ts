@@ -5,10 +5,12 @@ import {
   createPropertyController,
   getHostPrimaryPropertyController,
   getPropertyController,
+  listHostPropertiesAvailabilityController,
   listPropertiesController,
   patchPropertyController,
   searchPropertiesController,
   setAvailabilityController,
+  togglePropertyBookingAvailabilityController,
 } from '../controllers/properties.controller';
 import { requireAuth, requireRole } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validate.middleware';
@@ -67,6 +69,20 @@ const availabilitySchema = z.object({
   query: z.object({}).optional(),
 });
 
+const togglePropertyBookingAvailabilitySchema = z.object({
+  body: z.object({
+    bookingEnabled: z.boolean(),
+  }),
+  params: z.object({ id: mongoObjectIdSchema }),
+  query: z.object({}).optional(),
+});
+
+const emptySchema = z.object({
+  body: z.object({}).optional(),
+  params: z.object({}).optional(),
+  query: z.object({}).optional(),
+});
+
 export const propertiesRouter = Router();
 
 /**
@@ -78,7 +94,9 @@ export const propertiesRouter = Router();
 propertiesRouter.get('/search', validate(searchSchema), searchPropertiesController);
 propertiesRouter.get('/', listPropertiesController);
 propertiesRouter.get('/host/me', requireAuth, requireRole(['host']), getHostPrimaryPropertyController);
+propertiesRouter.get('/host/availability', requireAuth, requireRole(['host']), validate(emptySchema), listHostPropertiesAvailabilityController);
 propertiesRouter.get('/:id', validate(propertyIdParamsSchema), getPropertyController);
 propertiesRouter.post('/', requireAuth, requireRole(['host']), validate(createSchema), createPropertyController);
 propertiesRouter.patch('/:id', requireAuth, requireRole(['host']), validate(patchSchema), patchPropertyController);
+propertiesRouter.patch('/:id/booking-availability', requireAuth, requireRole(['host']), validate(togglePropertyBookingAvailabilitySchema), togglePropertyBookingAvailabilityController);
 propertiesRouter.post('/:id/availability', requireAuth, requireRole(['host']), validate(availabilitySchema), setAvailabilityController);

@@ -51,6 +51,29 @@ export async function findLatestPropertyByHostId(hostId: string): Promise<Proper
     .lean<PropertyDocument | null>();
 }
 
+export async function listPropertiesByHostId(hostId: string): Promise<PropertyDocument[]> {
+  return PropertyModel.find({ hostId: new Types.ObjectId(hostId) })
+    .sort({ createdAt: -1 })
+    .lean<PropertyDocument[]>();
+}
+
+export async function setPropertyBookingAvailability(input: {
+  propertyId: string;
+  hostId: string;
+  bookingEnabled: boolean;
+}): Promise<PropertyDocument | null> {
+  return PropertyModel.findOneAndUpdate(
+    {
+      _id: new Types.ObjectId(input.propertyId),
+      hostId: new Types.ObjectId(input.hostId),
+    },
+    {
+      bookingEnabled: input.bookingEnabled,
+    },
+    { returnDocument: 'after' },
+  ).lean<PropertyDocument | null>();
+}
+
 export async function createUnit(data: Partial<UnitDocument>): Promise<UnitDocument> {
   const created = await UnitModel.create(data as CreateUnitInput);
   return created.toObject() as unknown as UnitDocument;
@@ -105,7 +128,6 @@ export async function searchPropertiesByTypeAndPrice(
     properties.map(async (property) => {
       const units = await UnitModel.find({
         propertyId: new Types.ObjectId(String(property._id)),
-        isAvailable: true,
         ...(typeof priceMin === 'number' || typeof priceMax === 'number'
           ? {
               pricePerNight: {

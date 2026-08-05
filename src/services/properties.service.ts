@@ -5,7 +5,9 @@ import {
   findLatestPropertyByHostId,
   findPropertyById,
   listAvailabilityByUnitAndDateRange,
+  listPropertiesByHostId,
   listUnitsByProperty,
+  setPropertyBookingAvailability,
   searchPropertiesByTypeAndPrice,
   updateProperty,
   upsertAvailability,
@@ -20,6 +22,8 @@ interface PropertyApiView {
   city: string;
   area: string;
   propertyType: PropertyType;
+  bookingEnabled: boolean;
+  hasAvailableRooms: boolean;
   roomType: string;
   maxGuests: number;
   nightlyRate: number;
@@ -46,6 +50,7 @@ function mapPropertyToApiView(input: {
     city: string;
     area: string;
     propertyType: PropertyType;
+    bookingEnabled?: boolean;
     verified: boolean;
     photos: string[];
     amenities: string[];
@@ -66,6 +71,7 @@ function mapPropertyToApiView(input: {
     }
     return unit.pricePerNight < currentCheapest.pricePerNight ? unit : currentCheapest;
   }, undefined);
+  const hasAvailableRooms = units.some((unit) => unit.isAvailable !== false);
 
   return {
     id: String(input.property._id),
@@ -73,6 +79,8 @@ function mapPropertyToApiView(input: {
     city: input.property.city,
     area: input.property.area,
     propertyType: input.property.propertyType,
+    bookingEnabled: input.property.bookingEnabled ?? true,
+    hasAvailableRooms,
     roomType: cheapestUnit?.name ?? 'Standard Room',
     maxGuests: cheapestUnit?.maxGuests ?? 1,
     nightlyRate: cheapestUnit?.pricePerNight ?? 0,
@@ -184,6 +192,33 @@ export async function getHostPrimaryPropertyApiView(hostId: string): Promise<Pro
   return mapPropertyToApiView({ property, units });
 }
 
+export async function togglePropertyBookingAvailability(input: {
+  propertyId: string;
+  hostId: string;
+  bookingEnabled: boolean;
+}): Promise<{ propertyId: string; bookingEnabled: boolean }> {
+  const updated = await setPropertyBookingAvailability(input);
+  if (!updated) {
+    throw new AppError('Property not found', 404, 'PROPERTY_NOT_FOUND');
+  }
+
+  return {
+    propertyId: String(updated._id),
+    bookingEnabled: Boolean(updated.bookingEnabled),
+  };
+}
+
+export async function listHostPropertiesAvailability(input: {
+  hostId: string;
+}): Promise<Array<{ propertyId: string; propertyName: string; bookingEnabled: boolean }>> {
+  const properties = await listPropertiesByHostId(input.hostId);
+  return properties.map((property) => ({
+    propertyId: String(property._id),
+    propertyName: property.name,
+    bookingEnabled: Boolean(property.bookingEnabled),
+  }));
+}
+
 export async function setAvailability(input: {
   unitId: string;
   date: string;
@@ -217,6 +252,10 @@ export async function searchAvailableProperties(input: {
             return guestFilterPass && minPricePass && maxPricePass;
           })
           .map(async (unit) => {
+            if (unit.isAvailable === false) {
+              return null;
+            }
+
             const rows = await listAvailabilityByUnitAndDateRange(String(unit._id), checkIn, checkOut);
             const openCount = rows.filter((row) => row.status === 'open').length;
             return openCount === dates.length ? unit : null;
@@ -235,7 +274,9 @@ export async function searchAvailableProperties(input: {
     }),
   );
 
-  return available.filter((p): p is NonNullable<typeof p> => p !== null);
+  return available
+    .filter((p): p is NonNullable<typeof p> => p !== null)
+    .sort((a, b) => Number(Boolean(b.bookingEnabled ?? true)) - Number(Boolean(a.bookingEnabled ?? true)));
 }
 
 export async function listPropertyApiViews(input: {
@@ -265,5 +306,6 @@ export async function listPropertyApiViews(input: {
 
       return locationPass && amenitiesPass && guestPass;
     })
+    .sort((a, b) => Number(Boolean(b.bookingEnabled ?? true)) - Number(Boolean(a.bookingEnabled ?? true)))
     .map((entry) => mapPropertyToApiView({ property: entry, units: entry.units }));
 }

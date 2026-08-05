@@ -1,11 +1,12 @@
 import type { Request, Response } from 'express';
-import type { CreateUnitBodyDto, UpdateUnitBodyDto } from '../types/units';
+import type { CreateUnitBodyDto, ToggleUnitAvailabilityBodyDto, UpdateUnitBodyDto } from '../types/units';
 import {
   createUnitListing,
   getUnitDetails,
   getUnitsByProperty,
   removeAllUnitsByProperty,
   removeUnit,
+  toggleUnitAvailability,
   updateUnitListing,
 } from '../services/units.service';
 import { AppError } from '../utils/AppError';
@@ -60,6 +61,19 @@ export async function patchUnitController(req: Request, res: Response): Promise<
   });
 
   res.status(200).json({ ok: true });
+}
+
+export async function toggleUnitAvailabilityController(req: Request, res: Response): Promise<void> {
+  const id = getRequiredIdParam(req, 'id');
+  const body = req.body as ToggleUnitAvailabilityBodyDto;
+
+  const result = await toggleUnitAvailability({
+    hostId: req.user!.userId,
+    unitId: id,
+    isAvailable: body.isAvailable,
+  });
+
+  res.status(200).json(result);
 }
 
 export async function deleteUnitController(req: Request, res: Response): Promise<void> {

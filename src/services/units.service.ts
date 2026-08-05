@@ -97,6 +97,32 @@ export async function updateUnitListing(input: {
   }
 }
 
+export async function toggleUnitAvailability(input: {
+  hostId: string;
+  unitId: string;
+  isAvailable: boolean;
+}): Promise<{ unitId: string; isAvailable: boolean }> {
+  const unit = await findUnitById(input.unitId);
+  if (!unit) {
+    throw new AppError('Unit not found', 404, 'UNIT_NOT_FOUND');
+  }
+
+  const isOwner = await findPropertyOwnedByHost(String(unit.propertyId), input.hostId);
+  if (!isOwner) {
+    throw new AppError('Unit not found', 404, 'UNIT_NOT_FOUND');
+  }
+
+  const updated = await updateUnitById(input.unitId, { isAvailable: input.isAvailable });
+  if (!updated) {
+    throw new AppError('Unit not found', 404, 'UNIT_NOT_FOUND');
+  }
+
+  return {
+    unitId: String(updated._id),
+    isAvailable: Boolean(updated.isAvailable),
+  };
+}
+
 export async function removeUnit(input: {
   hostId: string;
   unitId: string;

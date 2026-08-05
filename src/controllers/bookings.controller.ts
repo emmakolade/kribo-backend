@@ -1,27 +1,23 @@
 import type { Request, Response } from 'express';
 import {
-  acceptBookingByHost,
   confirmBookingPaymentFromWebhook,
   createBookingFromPropertyRequest,
   createBookingRequest,
   decideBookingByHost,
-  confirmBookingPreauthorization,
   getBookingApiDetails,
   getBookingApiStatus,
   listBookings,
   getBookingStats,
-  initializeBookingPreauthorization,
-  cancelBooking,
   confirmBookingPayment,
   markBookingCheckedIn,
   markBookingCheckedInByHost,
-  processHostDecision,
   withdrawBookingPayoutByHost,
 } from '../services/bookings.service';
 import { env } from '../config/env';
 import { whatsappService } from '../services/whatsapp.service';
 import { paystackService } from '../services/paystack.service';
 import type { CreateBookingBodyDto, WhatsappWebhookBodyDto } from '../types/bookings.dto';
+import { findUserByPhoneCandidates } from '../repositories/users.repository';
 import { AppError } from '../utils/AppError';
 import { logger } from '../utils/logger';
 
@@ -32,6 +28,40 @@ function getRequiredIdParam(req: Request): string {
   }
 
   return id;
+}
+
+function normalizeIncomingWhatsappPhone(from: string): string[] {
+  const withoutPrefix = from.replace(/^whatsapp:/i, '').trim();
+  const compact = withoutPrefix.replace(/\s+/g, '');
+  if (!compact) {
+    return [];
+  }
+
+  const candidates = new Set<string>();
+  candidates.add(compact);
+
+  if (compact.startsWith('+')) {
+    candidates.add(compact.slice(1));
+  } else {
+    candidates.add(`+${compact}`);
+  }
+
+  return Array.from(candidates);
+}
+
+function extractCheckInCommand(input: string): { bookingId: string } | null {
+  const command = input.trim();
+  const match = command.match(/^CHECK-?IN\s+([a-fA-F0-9]{24})$/i);
+  if (!match) {
+    return null;
+  }
+
+  const bookingId = match[1];
+  if (!bookingId) {
+    return null;
+  }
+
+  return { bookingId };
 }
 
 export async function createBookingController(req: Request, res: Response): Promise<void> {
@@ -66,49 +96,6 @@ export async function createBookingController(req: Request, res: Response): Prom
   });
 
   res.status(201).json(result);
-}
-
-export async function initializeBookingPreauthorizationController(req: Request, res: Response): Promise<void> {
-  const body = req.body as {
-    propertyId: string;
-    checkIn: string;
-    checkOut: string;
-    guestCount?: number;
-    roomType?: string;
-    nightlyRate?: number;
-    firstName?: string;
-    lastName?: string;
-    email?: string;
-    phone?: string;
-    amount?: number;
-    currency?: string;
-    reference?: string;
-    paymentMethod?: 'card' | 'bank_transfer' | 'transfer';
-  };
-
-  const result = await initializeBookingPreauthorization({
-    guestId: req.user!.userId,
-    propertyId: body.propertyId,
-    checkIn: body.checkIn,
-    checkOut: body.checkOut,
-    roomType: body.roomType,
-    nightlyRate: body.nightlyRate,
-    paymentMethod: body.paymentMethod,
-  });
-
-  res.status(201).json(result);
-}
-
-export async function confirmBookingPreauthorizationController(req: Request, res: Response): Promise<void> {
-  const body = req.body as { reference: string };
-
-  const result = await confirmBookingPreauthorization({
-    reference: body.reference,
-    requesterId: req.user!.userId,
-    requesterRole: req.user!.role === 'admin' ? 'admin' : 'guest',
-  });
-
-  res.status(200).json(result);
 }
 
 export async function confirmBookingPaymentController(req: Request, res: Response): Promise<void> {
@@ -169,36 +156,52 @@ export async function whatsappWebhookController(req: Request, res: Response): Pr
     throw new AppError('Invalid webhook signature', 401, 'INVALID_WEBHOOK_SIGNATURE');
   }
 
-  let bookingId = payload.bookingId;
-  let decision = payload.decision;
-  const webhookId = payload.webhookId ?? payload.MessageSid;
+  const from = String(payload.From ?? '');
+  const text = String(payload.Body ?? '').trim();
+  const checkInCommand = extractCheckInCommand(text);
 
-  if (!bookingId || !decision) {
-    const incomingBody = payload.Body ?? '';
-    const parsed = incomingBody.match(/^\s*(accept|decline)\s+([a-zA-Z0-9_-]+)\s*$/i);
-    if (!parsed) {
-      throw new AppError('Invalid Twilio webhook payload', 400, 'INVALID_TWILIO_WEBHOOK_PAYLOAD');
-    }
-
-    decision = parsed[1]?.toLowerCase() as 'accept' | 'decline';
-    bookingId = parsed[2];
+  if (!checkInCommand || !from) {
+    res.status(200).json({ ok: true, ignored: true });
+    return;
   }
 
-  if (!webhookId) {
-    throw new AppError('Missing webhook identifier', 400, 'MISSING_WEBHOOK_ID');
+  const phoneCandidates = normalizeIncomingWhatsappPhone(from);
+  const host = await findUserByPhoneCandidates(phoneCandidates);
+  if (!host || host.role !== 'host') {
+    res.status(200).json({ ok: true, ignored: true });
+    return;
   }
 
-  if (!bookingId) {
-    throw new AppError('Missing booking identifier', 400, 'MISSING_BOOKING_ID');
+  try {
+    await markBookingCheckedInByHost({
+      bookingId: checkInCommand.bookingId,
+      requesterId: String(host._id),
+      requesterRole: 'host',
+    });
+
+    await whatsappService.sendGuestUpdate({
+      guestPhone: from,
+      text: 'Check-in recorded successfully. You can now login to Kribo and withdraw your payout.',
+    });
+
+    res.status(200).json({ ok: true, processed: true });
+  } catch (error) {
+    logger.warn(
+      {
+        err: error,
+        bookingId: checkInCommand.bookingId,
+        hostId: String(host._id),
+      },
+      'whatsapp check-in command failed',
+    );
+
+    await whatsappService.sendGuestUpdate({
+      guestPhone: from,
+      text: 'Check-in failed. Please login to Kribo app and check in from your bookings page.',
+    });
+
+    res.status(200).json({ ok: true, processed: false });
   }
-
-  const result = await processHostDecision({
-    bookingId,
-    decision,
-    webhookId,
-  });
-
-  res.status(200).json(result);
 }
 
 export async function paystackWebhookController(req: Request, res: Response): Promise<void> {
@@ -226,14 +229,13 @@ export async function paystackWebhookController(req: Request, res: Response): Pr
 
   const event = String(payload.event ?? '').toLowerCase();
   const isChargeSuccess = event === 'charge.success';
-  const isPreauthReserveSuccess = event === 'preauthorization.reserve.success';
   const reference = payload.data?.reference;
   const status = String(payload.data?.status ?? '').toLowerCase();
   const eventId = String(payload.data?.id ?? '').trim();
 
-  const isSuccessStatus = status === 'success' || status === 'authorized';
+  const isSuccessStatus = status === 'success';
 
-  if ((!isChargeSuccess && !isPreauthReserveSuccess) || !isSuccessStatus || !reference || !eventId) {
+  if (!isChargeSuccess || !isSuccessStatus || !reference || !eventId) {
     logger.info(
       {
         event,
@@ -276,32 +278,12 @@ export async function hostActionController(req: Request, res: Response): Promise
     throw new AppError('Only hosts and admins can act on bookings', 403, 'FORBIDDEN');
   }
 
-  const action = req.body?.action as 'accept' | 'decline' | 'check-in';
+  const action = req.body?.action as 'check-in';
   const result = await decideBookingByHost({
     bookingId: id,
     requesterId: req.user!.userId,
     requesterRole: role,
     action,
-  });
-
-  res.status(200).json({
-    bookingId: id,
-    status: result.status,
-    ttlSeconds: result.ttlSeconds,
-  });
-}
-
-export async function hostCheckInController(req: Request, res: Response): Promise<void> {
-  const id = getRequiredIdParam(req);
-  const role = req.user!.role;
-  if (role !== 'host' && role !== 'admin') {
-    throw new AppError('Only hosts and admins can check in bookings', 403, 'FORBIDDEN');
-  }
-
-  const result = await markBookingCheckedInByHost({
-    bookingId: id,
-    requesterId: req.user!.userId,
-    requesterRole: role,
   });
 
   res.status(200).json({
@@ -329,29 +311,4 @@ export async function hostWithdrawController(req: Request, res: Response): Promi
     status: result.status,
     ttlSeconds: result.ttlSeconds,
   });
-}
-
-export async function cancelBookingController(req: Request, res: Response): Promise<void> {
-  const id = getRequiredIdParam(req);
-  const result = await cancelBooking(
-    id,
-    req.user!.role === 'host' ? 'host' : 'guest',
-  );
-  res.status(200).json(result);
-}
-
-export async function acceptBookingController(req: Request, res: Response): Promise<void> {
-  const id = getRequiredIdParam(req);
-  const role = req.user!.role;
-  if (role !== 'host' && role !== 'admin') {
-    throw new AppError('Only hosts and admins can accept bookings', 403, 'FORBIDDEN');
-  }
-
-  const result = await acceptBookingByHost({
-    bookingId: id,
-    requesterId: req.user!.userId,
-    requesterRole: role,
-  });
-
-  res.status(200).json(result);
 }

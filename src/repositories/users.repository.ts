@@ -24,6 +24,14 @@ export async function findUserById(userId: string): Promise<UserDocument | null>
   return UserModel.findById(new Types.ObjectId(userId)).lean<UserDocument | null>();
 }
 
+export async function findUserByPhoneCandidates(phoneCandidates: string[]): Promise<UserDocument | null> {
+  if (phoneCandidates.length === 0) {
+    return null;
+  }
+
+  return UserModel.findOne({ phoneNumber: { $in: phoneCandidates } }).lean<UserDocument | null>();
+}
+
 export async function updateHostVerification(
   userId: string,
   bvn: string,

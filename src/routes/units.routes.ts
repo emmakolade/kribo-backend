@@ -7,6 +7,7 @@ import {
   getUnitController,
   getUnitsController,
   patchUnitController,
+  toggleUnitAvailabilityController,
 } from '../controllers/units.controller';
 import { requireAuth, requireRole } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validate.middleware';
@@ -46,6 +47,14 @@ const unitIdParamsSchema = z.object({
   query: z.object({}).optional(),
 });
 
+const toggleAvailabilitySchema = z.object({
+  body: z.object({
+    isAvailable: z.boolean(),
+  }),
+  params: z.object({ id: mongoObjectIdSchema }),
+  query: z.object({}).optional(),
+});
+
 const propertyIdParamsSchema = z.object({
   params: z.object({ propertyId: mongoObjectIdSchema }),
   body: z.object({}).optional(),
@@ -58,5 +67,6 @@ unitsRouter.post('/', requireAuth, requireRole(['host']), validate(createSchema)
 unitsRouter.get('/property/:propertyId', requireAuth, requireRole(['host']), validate(propertyIdParamsSchema), getUnitsController);
 unitsRouter.get('/:id', requireAuth, requireRole(['host']), validate(unitIdParamsSchema), getUnitController);
 unitsRouter.patch('/:id', requireAuth, requireRole(['host']), validate(patchSchema), patchUnitController);
+unitsRouter.patch('/:id/availability', requireAuth, requireRole(['host']), validate(toggleAvailabilitySchema), toggleUnitAvailabilityController);
 unitsRouter.delete('/:id', requireAuth, requireRole(['host']), validate(unitIdParamsSchema), deleteUnitController);
 unitsRouter.delete('/property/:propertyId', requireAuth, requireRole(['host']), validate(propertyIdParamsSchema), deleteAllUnitsController);

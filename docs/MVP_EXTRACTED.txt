@@ -1,0 +1,121 @@
+﻿Kribo
+Hotel & Apartment Booking Platform — MVP Product Brief
+
+1. MVP Feature Set
+The goal is to validate the core loop — list, discover, book, pay, confirm — before adding anything else. Everything below is scoped for product-market fit, not for a full-featured platform.
+Host / Property Owner Features
+Sign up and property listing: photos, description, amenities, location, price per night, room/unit types
+Availability calendar: mark dates open or blocked
+Simple dashboard: bookings received, earnings, occupancy
+Manual approval toggle: auto-accept bookings vs. host confirms each one
+Guest Features
+Search by location, date range, price, and guest count
+Property detail page with photos, amenities, and a placeholder for reviews
+Instant-book or request-to-book flow
+In-app payment at checkout
+Booking confirmation and receipt via email or SMS
+Booking history / "My Trips" section
+Platform-Level (Non-Negotiable for Trust)
+Payment integration via Paystack or Flutterwave — supports Nigerian cards, bank transfer, and USSD
+Escrow-style payment logic: hold guest payment until check-in is confirmed, then release funds to the host minus commission
+Basic host verification: BVN or ID upload, to reduce fake listings
+Simple cancellation and refund policy logic
+Admin panel for manual listing moderation and dispute resolution
+Deliberately Out of Scope for MVP
+Reviews and ratings system
+Loyalty or rewards programs
+Multi-language support
+Native iOS/Android apps on day one — a responsive web app can validate demand first
+Dynamic or seasonal pricing tools for hosts
+Architectural note: the trickiest part is the booking state machine — pending → confirmed → checked-in → completed → paid-out, with cancellation and refund branches. Design this carefully up front even while keeping the UI simple.
+2. Booking Engine — WhatsApp Host Confirmation + Standard Payment
+This solves a different problem than escrow: escrow protects against payment disputes after a stay, but it does nothing to stop a host from double-booking a room that&apos;s actually already occupied. Many Nigerian hosts still take walk-ins and phone bookings that never make it into an online calendar. The fix is to build a system that adapts to how hosts already operate — largely via WhatsApp — rather than forcing them onto a new dashboard habit, combined with a payment hold instead of an instant charge.
+Why a Hold Instead of an Instant Charge
+Charging the guest immediately still creates a refund cycle (3-7 days) whenever a host declines or fails to respond. This flow accepts that tradeoff and uses a clear refund path: payment completes at checkout, then the backend triggers an immediate refund if the host declines or the confirmation window expires.
+Phase 1 — Booking Initiation & Payment Hold
+Guest selects dates, clicks Book Now, and enters card details on the frontend
+Backend calls Paystack&apos;s standard checkout initialization endpoint and verifies payment completion
+Once the hold succeeds, the backend pushes a booking_pending event to a message queue (RabbitMQ) and returns a “Booking Processing” state to the guest&apos;s screen
+Phase 2 — WhatsApp Notification to the Host
+A background worker (Celery) picks up the event from the queue and sends a WhatsApp Cloud API message to the host&apos;s registered number
+The message uses an approved Meta interactive template with quick-reply buttons: property, check-in/check-out dates, payout amount, and a confirmation deadline
+Buttons: “Accept Booking” and “Decline — Not Available”
+Phase 3 — Wait State & Countdown
+Booking state is written to the database as pending_host_approval
+A TTL key is stored in Redis (e.g. 5–10 minutes for same-day bookings, up to 15 minutes for future dates) to track the confirmation window
+The system waits for an asynchronous webhook from Meta indicating which button the host tapped
+Phase 4 — Host Response Pathways
+Accept: webhook fires → backend marks booking confirmed → guest receives confirmation and check-in instructions
+Decline: backend triggers refund on the completed payment → those dates are marked unavailable for that property, preventing repeat failed bookings → guest is prompted to book an alternative
+Phase 5 — Timeout & Manual Escalation
+If the Redis TTL expires with no webhook response, the booking status updates to escalated
+An alert is pushed to an internal operations dashboard (or Slack channel)
+An operations agent calls the host directly to confirm availability, then manually triggers Force Accept or Force Decline on the internal admin panel — this programmatically runs the same Accept/Decline pathway above
+This hybrid model gives you the speed of automation backed by the reliability of human verification when automation stalls
+Phase 6 — Proactive Calendar Syncing
+Scheduled jobs message high-volume hosts before weekends or holidays: “Do you have any offline bookings this weekend?” with Yes/No quick-reply buttons
+A “Yes, fully booked” response automatically blocks those dates in the database — this is the preventative measure that reduces escalations and declines over time by keeping the calendar honest before guests ever search
+Tech Stack Notes
+Backend: FastAPI
+Database: MongoDB (booking, host, and property documents; TTL indexes can mirror some of the Redis-based expiry logic if useful)
+Queue: RabbitMQ for event-driven handoff between booking initiation, WhatsApp dispatch, and escalation
+Workers: Celery consumers to process queued events asynchronously
+Timers: Redis for TTL-based countdown tracking
+Payments: Paystack standard checkout + transaction verification/refund endpoints
+Messaging: WhatsApp Cloud API with Meta-approved interactive templates
+How this connects to the escrow model in Section 3: payment verification completes checkout, then booking moves to confirmed and payout lifecycle continues through checked_in to paid_out.
+3. Payment Flow — Full Escrow Model
+Booking is online-only: no pay-on-arrival path. This removes the most common failure mode seen across existing platforms (guest pays, hotel says they didn&apos;t), because your platform holds custody of funds until check-in is confirmed, rather than the host receiving payment directly.
+Booking & Fund States
+pending — guest has selected dates and room, payment not yet captured
+confirmed — guest&apos;s payment has been completed and verified via Paystack; funds settle into the platform&apos;s account, not the host&apos;s
+confirmed — host has accepted via WhatsApp (or an ops agent force-accepted after escalation); guest and host both receive confirmation and receipt
+checked_in — host marks the guest as arrived, or check-in date/time passes automatically
+completed — stay is over; held funds become eligible for payout
+paid_out — commission is deducted, and the remaining balance is transferred to the host&apos;s bank account via the Paystack/Flutterwave Transfers API
+cancelled / refunded — triggered by guest or host cancellation before check-in, per the cancellation policy; refund is issued from held funds, no clawback needed since the host was never paid
+disputed — either party raises an issue after check-in; payout is frozen pending manual review in the admin panel
+Step-by-Step Flow
+1. Guest selects a room and pays the full amount at checkout. No booking is confirmed without successful payment.
+2. Funds settle into the platform&apos;s own payment gateway sub-account — this is what gives you custody, functioning as escrow, without needing a separate legal escrow provider.
+3. Booking status moves to confirmed. The host sees the booking and guest details but does not receive funds yet.
+4. On or after the check-in date, the booking auto-advances to checked_in (or the host manually confirms arrival). This is the trigger point for payout eligibility.
+5. A scheduled job (e.g. runs daily) finds all completed bookings past their held period and initiates payout: commission is calculated and deducted, and the net amount is transferred to the host via API.
+6. If a guest cancels before check-in, refund logic runs against your cancellation policy (e.g. full refund 48+ hours out, partial refund inside 48 hours, no refund on no-show) and the guest is refunded directly from held funds.
+7. If a dispute is raised (host says guest never checked in, guest says property didn&apos;t match listing), payout is frozen and routed to the admin panel for manual resolution before funds move either direction.
+No-Show Handling
+Default policy: if a guest pays and is confirmed but never checks in (and hasn&apos;t cancelled within the allowed window), the host is still paid out after 24 hours past the scheduled check-in time. This avoids ambiguous he-said-she-said disputes and matches standard hotel industry practice — the room was held and unavailable to other guests regardless of whether the guest showed up.
+Why This Beats Pay-on-Arrival
+Removes payment disputes entirely — there&apos;s no scenario where the host claims non-payment, since your platform holds funds directly
+Simpler to build than true third-party escrow (no separate escrow license or provider integration needed) — this is achieved through payout timing rules on your own payment gateway sub-account
+Builds host trust faster: hosts see confirmed, already-paid bookings rather than speculative reservations that may or may not be honored
+Gives you, the platform, natural leverage to enforce quality and resolve disputes, since you control the money until the stay is verified
+Architectural note: this payout logic should run as an idempotent scheduled job (not triggered synchronously by user action), since payout timing depends on wall-clock time (check-in date passing) rather than a specific user request. Build it so it can safely re-run without double-paying a host if it fails partway through a batch.
+4. Color Palette
+For a booking app handling payments, the palette should feel trustworthy but warm and local — not sterile like a typical fintech app. Teal plus terracotta also stands out against competitors (Hotels.ng, Jumia Travel, Wakanow), which lean blue and generic orange.
+Swatch
+Role
+Hex
+Usage
+Primary — Deep Teal
+#0F5E5A
+Navigation, headers, primary brand color
+Accent — Terracotta
+#E2703A
+CTAs: Book Now, Confirm Payment
+Background — Off-White
+#F7F5F1
+App background, cards
+Text — Charcoal
+#232323
+Body text, headings (softer than pure black)
+Success — Muted Green
+#4C8C6B
+Booking confirmed, payment successful
+Alert — Soft Red
+#C4453A
+Errors, cancellations, warnings
+
+Next step: a quick visual mock (logo concept + sample listing card) can validate how this palette reads in the actual product before locking it in.
+
+

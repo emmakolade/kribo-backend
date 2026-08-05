@@ -14,6 +14,7 @@ const envSchema = z.object({
   PAYSTACK_BASE_URL: z.url(),
   PAYSTACK_WEBHOOK_URL: z.url().optional(),
   PAYSTACK_BOOKING_CALLBACK_URL: z.url().optional(),
+  HOST_APP_BASE_URL: z.url().default('http://localhost:3000'),
   TWILIO_ACCOUNT_SID: z.string().min(1),
   TWILIO_AUTH_TOKEN: z.string().min(1),
   TWILIO_WHATSAPP_FROM: z.string().min(1),

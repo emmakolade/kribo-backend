@@ -2,9 +2,18 @@ import twilio from 'twilio';
 import { env } from '../config/env';
 
 export interface WhatsappService {
-  sendHostConfirmation(input: {
+  sendHostBookingNotification(input: {
     hostPhone: string;
     bookingId: string;
+    guestName: string;
+    paymentStatus: 'PAID' | 'NOT PAID';
+    checkIn: string;
+    checkOut: string;
+  }): Promise<{ messageId: string; payload: unknown }>;
+  sendHostCheckInReminder(input: {
+    hostPhone: string;
+    bookingId: string;
+    guestName: string;
     checkIn: string;
     checkOut: string;
   }): Promise<{ messageId: string; payload: unknown }>;
@@ -23,18 +32,54 @@ function normalizeWhatsappAddress(phone: string): string {
 class LiveWhatsappService implements WhatsappService {
   private readonly client = twilio(env.TWILIO_ACCOUNT_SID!, env.TWILIO_AUTH_TOKEN!);
 
-  public async sendHostConfirmation(input: {
+  public async sendHostBookingNotification(input: {
     hostPhone: string;
     bookingId: string;
+    guestName: string;
+    paymentStatus: 'PAID' | 'NOT PAID';
     checkIn: string;
     checkOut: string;
   }): Promise<{ messageId: string; payload: unknown }> {
     const body = [
-      'New booking request on Kribo.',
+      'New booking received on Kribo.',
       `Booking ID: ${input.bookingId}`,
+      `Guest Name: ${input.guestName}`,
+      `Payment Status: *${input.paymentStatus}*`,
       `Check-in: ${input.checkIn}`,
       `Check-out: ${input.checkOut}`,
-      `Reply: ACCEPT ${input.bookingId} or DECLINE ${input.bookingId}`,
+      'Please prepare to host this guest.',
+    ].join('\n');
+
+    const data = await this.client.messages.create({
+      from: env.TWILIO_WHATSAPP_FROM!,
+      to: normalizeWhatsappAddress(input.hostPhone),
+      body,
+    });
+
+    return {
+      messageId: data.sid,
+      payload: data,
+    };
+  }
+
+  public async sendHostCheckInReminder(input: {
+    hostPhone: string;
+    bookingId: string;
+    guestName: string;
+    checkIn: string;
+    checkOut: string;
+  }): Promise<{ messageId: string; payload: unknown }> {
+    const body = [
+      'Check-in reminder for today on Kribo.',
+      `Booking ID: ${input.bookingId}`,
+      `Guest Name: ${input.guestName}`,
+      'Payment Status: *PAID*',
+      `Check-in: ${input.checkIn}`,
+      `Check-out: ${input.checkOut}`,
+      'You can mark check-in here on WhatsApp by replying:',
+      `CHECK-IN ${input.bookingId}`,
+      'Recommended: Login to the Kribo app and confirm check-in there.',
+      'After check-in, you can withdraw your payout in the app.',
     ].join('\n');
 
     const data = await this.client.messages.create({

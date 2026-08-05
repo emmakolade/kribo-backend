@@ -1,14 +1,21 @@
 import type { Request, Response } from 'express';
 import type { PropertyType } from '../constants/enums';
-import type { CreatePropertyBodyDto, SearchPropertiesQueryDto, SetAvailabilityBodyDto } from '../types/properties';
+import type {
+  CreatePropertyBodyDto,
+  SearchPropertiesQueryDto,
+  SetAvailabilityBodyDto,
+  TogglePropertyBookingAvailabilityBodyDto,
+} from '../types/properties';
 import {
   createPropertyListing,
   editPropertyListing,
   getHostPrimaryPropertyApiView,
   getPropertyApiDetails,
+  listHostPropertiesAvailability,
   listPropertyApiViews,
   searchAvailableProperties,
   setAvailability,
+  togglePropertyBookingAvailability,
 } from '../services/properties.service';
 import { AppError } from '../utils/AppError';
 
@@ -102,6 +109,27 @@ export async function getPropertyController(req: Request, res: Response): Promis
 export async function getHostPrimaryPropertyController(req: Request, res: Response): Promise<void> {
   const property = await getHostPrimaryPropertyApiView(req.user!.userId);
   res.status(200).json({ property });
+}
+
+export async function listHostPropertiesAvailabilityController(req: Request, res: Response): Promise<void> {
+  const properties = await listHostPropertiesAvailability({
+    hostId: req.user!.userId,
+  });
+
+  res.status(200).json({ properties });
+}
+
+export async function togglePropertyBookingAvailabilityController(req: Request, res: Response): Promise<void> {
+  const id = getRequiredIdParam(req);
+  const body = req.body as TogglePropertyBookingAvailabilityBodyDto;
+
+  const result = await togglePropertyBookingAvailability({
+    propertyId: id,
+    hostId: req.user!.userId,
+    bookingEnabled: body.bookingEnabled,
+  });
+
+  res.status(200).json(result);
 }
 
 export async function setAvailabilityController(req: Request, res: Response): Promise<void> {

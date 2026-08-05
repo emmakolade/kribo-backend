@@ -33,18 +33,19 @@ This document reflects the currently implemented REST endpoints in the backend.
 | GET    | /properties/search                              | No   | Public                      |
 | GET    | /properties/:id                                 | No   | Public                      |
 | GET    | /properties/host/me                             | Yes  | host                        |
+| GET    | /properties/host/availability                   | Yes  | host                        |
 | POST   | /properties                                     | Yes  | host                        |
 | PATCH  | /properties/:id                                 | Yes  | host                        |
+| PATCH  | /properties/:id/booking-availability            | Yes  | host                        |
 | POST   | /properties/:id/availability                    | Yes  | host                        |
 | POST   | /units                                          | Yes  | host                        |
 | GET    | /units/property/:propertyId                     | Yes  | host                        |
 | GET    | /units/:id                                      | Yes  | host                        |
 | PATCH  | /units/:id                                      | Yes  | host                        |
+| PATCH  | /units/:id/availability                         | Yes  | host                        |
 | DELETE | /units/:id                                      | Yes  | host                        |
 | DELETE | /units/property/:propertyId                     | Yes  | host                        |
 | POST   | /bookings                                       | Yes  | guest                       |
-| POST   | /bookings/preauth/initialize                    | Yes  | guest                       |
-| POST   | /bookings/preauth/confirm                       | Yes  | guest/admin                 |
 | POST   | /bookings/:id/confirm-payment                   | Yes  | guest/admin                 |
 | GET    | /bookings                                       | Yes  | Any                         |
 | GET    | /bookings/stats                                 | Yes  | host/admin                  |
@@ -234,6 +235,19 @@ Host register body uses the same fields with `"role": "host"`.
 }
 ```
 
+- Validation:
+  - `otp` must be a 6-digit string
+  - `newPassword` min length 8
+  - `confirmPassword` min length 8 and must match `newPassword`
+- Response 200:
+
+```json
+{
+  "accessToken": "jwt-access-token",
+  "refreshToken": "jwt-refresh-token"
+}
+```
+
 ### GET /auth/me
 
 - Auth: required
@@ -253,18 +267,6 @@ Host register body uses the same fields with `"role": "host"`.
     "propertyName": "Harborlight Suites",
     "propertyType": "hotel",
     "status": {
-
-  ### POST /auth/logout
-
-  - Auth: required
-  - Body: none
-  - Response 200:
-
-  ```json
-  {
-    "ok": true
-  }
-  ```
       "completed": false,
       "details": {
         "businessPhoneNumber": "+2348012345678",
@@ -297,18 +299,18 @@ Host register body uses the same fields with `"role": "host"`.
     }
   }
 }
+
 ```
 
-- Validation:
-  - `otp` must be a 6-digit string
-  - `newPassword` min length 8
-  - `confirmPassword` min length 8 and must match `newPassword`
+### POST /auth/logout
+
+- Auth: required
+- Body: none
 - Response 200:
 
 ```json
 {
-  "accessToken": "jwt-access-token",
-  "refreshToken": "jwt-refresh-token"
+  "ok": true
 }
 ```
 
@@ -630,6 +632,8 @@ All endpoints below require auth and are host-only.
     "city": "Lagos",
     "area": "Lekki",
     "propertyType": "shortlet",
+    "bookingEnabled": true,
+    "hasAvailableRooms": true,
     "roomType": "Deluxe",
     "maxGuests": 2,
     "nightlyRate": 75000,
@@ -720,6 +724,43 @@ All endpoints below require auth and are host-only.
 }
 ```
 
+### GET /properties/host/availability
+
+- Auth: required, role `host`
+- Response 200:
+
+```json
+{
+  "properties": [
+    {
+      "propertyId": "688...",
+      "propertyName": "Lekki Lagoon Suites",
+      "bookingEnabled": true
+    }
+  ]
+}
+```
+
+### PATCH /properties/:id/booking-availability
+
+- Auth: required, role `host`
+- Body:
+
+```json
+{
+  "bookingEnabled": false
+}
+```
+
+- Response 200:
+
+```json
+{
+  "propertyId": "688...",
+  "bookingEnabled": false
+}
+```
+
 ---
 
 ## Unit Endpoints
@@ -774,6 +815,25 @@ All unit endpoints require auth and role `host`.
 }
 ```
 
+### PATCH /units/:id/availability
+
+- Body:
+
+```json
+{
+  "isAvailable": false
+}
+```
+
+- Response 200:
+
+```json
+{
+  "unitId": "688...",
+  "isAvailable": false
+}
+```
+
 ### DELETE /units/:id
 
 - Response 200:
@@ -818,7 +878,7 @@ Alternative property-first body:
   "propertyId": "688...",
   "checkIn": "2026-08-01",
   "checkOut": "2026-08-03",
-  "paymentMethod": "card",
+  "paymentMethod": "bank_transfer",
   "roomType": "Entire 1-bedroom",
   "nightlyRate": 75000
 }
@@ -838,93 +898,22 @@ Alternative property-first body:
 ```
 
 - Payment flow note:
-  - Open `paystackCheckoutUrl` in the client to complete payment authorization.
-  - After checkout, call `POST /bookings/:id/confirm-payment` to verify and move booking to `payment_held`.
-  - Final capture is not performed here; charge capture only happens when host accepts.
-  - `paymentMethod` supports `card`, `transfer`, `ussd` for transparent checkout messaging and downstream booking behavior.
-
-### POST /bookings/preauth/initialize
-
-- Auth: required, role `guest`
-- Purpose: initialize checkout and create booking in `pending` state.
-- Method behavior:
-  - `paymentMethod=card`: initializes card preauthorization (hold, not immediate debit).
-  - `paymentMethod=transfer|ussd`: initializes standard checkout (immediate payment after guest completes transfer/USSD).
-- Body:
-
-```json
-{
-  "propertyId": "688...",
-  "checkIn": "2026-08-01",
-  "checkOut": "2026-08-03",
-  "guestCount": 2,
-  "paymentMethod": "card",
-  "roomType": "Entire 1-bedroom",
-  "nightlyRate": 75000,
-  "firstName": "Jane",
-  "lastName": "Doe",
-  "email": "jane@example.com",
-  "phone": "+2348012345678",
-  "amount": 15200000,
-  "currency": "NGN"
-}
-```
-
-- Response 201:
-
-```json
-{
-  "bookingId": "688...",
-  "reference": "pre_xxxxx",
-  "accessCode": "NDEyOTIyOmxpdmU6...",
-  "amount": 15200000,
-  "currency": "NGN",
-  "status": "pending"
-}
-```
-
-### POST /bookings/preauth/confirm
-
-- Auth: required (`guest` owner or `admin`)
-- Purpose: verify checkout completion and transition booking state.
-- Body:
-
-```json
-{
-  "reference": "pre_xxxxx"
-}
-```
-
-- Response 200:
-
-```json
-{
-  "bookingId": "688...",
-  "reference": "pre_xxxxx",
-  "status": "payment_held"
-}
-```
-
-- Flow rule:
-  - For `card`, this confirms payment hold only; final debit/capture is performed only when host accepts (`POST /bookings/:id/action` with `accept`).
-  - For `transfer|ussd`, this confirms completed payment.
-  - For non-card methods (`transfer`, `ussd`) on properties marked `instantBookEligible`, booking may be auto-confirmed after successful payment confirmation.
-
-- Timeout/decline refund rule:
-  - On host decline, release is triggered immediately.
-  - On confirmation timeout, release is also triggered immediately and booking is moved to `declined`.
+  - Open `paystackCheckoutUrl` in the client to complete payment.
+  - After checkout, call `POST /bookings/:id/confirm-payment` to verify and move booking to `confirmed`.
+  - Once confirmed, host receives a WhatsApp booking notification with booking details.
+  - `paymentMethod` supports `card`, `bank_transfer`, and `transfer`.
 
 ### POST /bookings/:id/confirm-payment
 
 - Auth: required (`guest` owner or `admin`)
 - Body: none
-- Behavior: verifies Paystack transaction status and transitions booking to `payment_held` when successful.
+- Behavior: verifies Paystack transaction status and transitions booking to `confirmed` when successful.
 - Response 200:
 
 ```json
 {
   "bookingId": "688...",
-  "status": "payment_held"
+  "status": "confirmed"
 }
 ```
 
@@ -962,8 +951,8 @@ Alternative property-first body:
 ```json
 {
   "bookingId": "688...",
-  "status": "payment_held",
-  "ttlSeconds": 534
+  "status": "confirmed",
+  "ttlSeconds": 0
 }
 ```
 
@@ -983,11 +972,11 @@ Alternative property-first body:
 
 ```json
 {
-  "action": "accept"
+  "action": "check-in"
 }
 ```
 
-- [ ] `action`: `accept | decline | check-in`
+- [ ] `action`: `check-in`
 - [ ] Response 200:
 
 ```json
@@ -1020,15 +1009,8 @@ Alternative property-first body:
 - Auth: none (signature-verified in controller)
 - Required header:
   - `x-twilio-signature`
-- Body format A:
 
-```json
-{
-  "bookingId": "688...",
-  "decision": "accept",
-  "webhookId": "twilio-message-id-123"
-}
-```
+- Purpose: verifies Twilio signature and processes host check-in command replies.
 
 ### POST /webhooks/paystack
 
@@ -1037,16 +1019,17 @@ Alternative property-first body:
 - Purpose: automatically confirms a booking payment when a `charge.success` event with `data.status=success` is received for a booking's `paystackReference`.
 - Dashboard setup: set your Paystack webhook URL to your public backend URL + `/webhooks/paystack` (for example: `https://api.kribo.com/webhooks/paystack`).
 - Notes:
+
   - This endpoint is idempotent using Paystack event id.
   - Non-payment events are safely acknowledged and ignored.
   - Returns `200` for accepted/ignored events so Paystack does not keep retrying handled callbacks.
-
-- Body format B (Twilio-style payload):
+- Body example (Twilio-style payload):
 
 ```json
 {
-  "Body": "ACCEPT 688abc123",
-  "MessageSid": "SM123"
+  "Body": "CHECK-IN 688b3024bca1aeb3e90f7a3f",
+  "MessageSid": "SM123",
+  "From": "whatsapp:+2348012345678"
 }
 ```
 
@@ -1054,9 +1037,14 @@ Alternative property-first body:
 
 ```json
 {
-  "status": "confirmed"
+  "ok": true,
+  "processed": true
 }
 ```
+
+- Notes:
+  - If command format is invalid or sender is not a host, response is still `200` with ignored/processed false semantics to avoid Twilio retry loops.
+  - Supported command format: `CHECK-IN <BOOKING_ID>` (24-char MongoDB ObjectId).
 
 ---
 

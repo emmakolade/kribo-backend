@@ -63,6 +63,29 @@ export async function findBookingsByStatus(status: BookingStatus): Promise<Booki
   return BookingModel.find({ status }).lean<BookingDocument[]>();
 }
 
+export async function findConfirmedBookingsForCheckInDate(input: {
+  dayStart: Date;
+  dayEnd: Date;
+}): Promise<BookingDocument[]> {
+  return BookingModel.find({
+    status: BookingStatus.CONFIRMED,
+    checkIn: {
+      $gte: input.dayStart,
+      $lt: input.dayEnd,
+    },
+    checkInReminderSentAt: { $exists: false },
+  }).lean<BookingDocument[]>();
+}
+
+export async function markCheckInReminderSent(bookingId: string): Promise<void> {
+  await BookingModel.findByIdAndUpdate(
+    new Types.ObjectId(bookingId),
+    {
+      checkInReminderSentAt: new Date(),
+    },
+  ).lean();
+}
+
 export async function findCompletedBookingsForPayout(
   payoutHoldDays: number,
 ): Promise<BookingDocument[]> {

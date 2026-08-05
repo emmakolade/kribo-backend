@@ -1,6 +1,5 @@
 export enum BookingStatus {
   PENDING = 'pending',
-  PAYMENT_HELD = 'payment_held',
   CONFIRMED = 'confirmed',
   DECLINED = 'declined',
   CHECKED_IN = 'checked_in',
@@ -13,15 +12,10 @@ export enum BookingStatus {
 }
 
 const allowedTransitions: Record<BookingStatus, BookingStatus[]> = {
-  [BookingStatus.PENDING]: [BookingStatus.PAYMENT_HELD, BookingStatus.CANCELLED_BY_GUEST],
-  [BookingStatus.PAYMENT_HELD]: [
-    BookingStatus.CONFIRMED,
-    BookingStatus.DECLINED,
-    BookingStatus.ESCALATED,
-    BookingStatus.CANCELLED_BY_GUEST,
-  ],
+  [BookingStatus.PENDING]: [BookingStatus.CONFIRMED, BookingStatus.CANCELLED_BY_GUEST],
   [BookingStatus.CONFIRMED]: [
     BookingStatus.CHECKED_IN,
+    BookingStatus.DECLINED,
     BookingStatus.CANCELLED_BY_HOST,
     BookingStatus.DISPUTED,
   ],

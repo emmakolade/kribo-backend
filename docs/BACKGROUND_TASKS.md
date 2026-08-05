@@ -10,9 +10,13 @@ Started in bootstrap flow:
 - `schedulePayoutSweep()`
 - `scheduleEscalationChecks()`
 - `scheduleCalendarSyncPrompt()`
+- `scheduleCheckInReminderJob()`
+- `scheduleHostAvailabilityReminderJob()`
 - `startPayoutWorker()`
 - `startEscalationWorker()`
 - `startCalendarSyncWorker()`
+- `startCheckInReminderWorker()`
+- `startHostAvailabilityReminderWorker()`
 
 See implementation in:
 
@@ -25,27 +29,24 @@ See implementation in:
 ### Component
 
 - File: `src/queue/bookingEvents.consumer.ts`
-- Trigger source: RabbitMQ event `booking.pending`
+- Trigger source: RabbitMQ event `booking.confirmed`
 - Exchange: `booking.exchange`
 - Queue: `booking.events`
-- Routing key: `booking.pending`
+- Routing key: `booking.confirmed`
 
 ### What it does
 
-1. Receives booking pending event.
+1. Receives booking confirmed event.
 2. Loads booking and host.
-3. Sends WhatsApp host confirmation interactive message.
+3. Sends host booking notification through WhatsApp and email.
 4. Writes `WhatsappLog` record.
-5. Creates Redis timer key `booking:timer:{bookingId}` with TTL:
-   - same-day check-in: 10 minutes
-   - future check-in: 15 minutes
-6. Acks Rabbit message.
+5. Acks Rabbit message.
 
 ### Why it matters
 
 - Keeps booking request path fast.
 - Decouples host notification from API request thread.
-- Timer setup is centralized with host-notification dispatch.
+- Host notification dispatch is decoupled from the API request path.
 
 ---
 
@@ -89,19 +90,16 @@ See implementation in:
 ### Worker action
 
 - Calls `escalateExpiredBookings()` from `src/services/bookings.service.ts`.
-- If escalations occurred, pushes an ops alert job via `pushOpsAlert()`.
+- Current implementation returns `0` (no-op) because there is no host confirmation wait state.
 
 ### What it does
 
-1. Scans bookings in `payment_held`.
-2. Checks Redis confirmation timer key existence.
-3. If timer expired (key missing), transitions booking to `escalated`.
-4. Emits ops alert payload with escalation count.
+1. Runs a scheduled no-op check.
+2. Emits no alerts while host confirmation wait-state is disabled.
 
 ### Why it matters
 
-- Prevents bookings from hanging indefinitely waiting on host response.
-- Gives operations visibility for manual intervention.
+- Preserves scheduler wiring while this flow is intentionally disabled.
 
 ---
 
@@ -145,15 +143,81 @@ See implementation in:
 
 ---
 
+## 6) BullMQ Recurring Job: Check-in Reminder
+
+### Component
+
+- File: `src/jobs/checkInReminder.job.ts`
+- Queue name: `booking.checkin-reminder`
+- Schedule: every 1 hour
+
+### Worker action
+
+- Finds `confirmed` bookings with `checkIn` date equal to today and no prior reminder marker.
+- Sends host WhatsApp reminder with booking details and check-in instruction.
+- Marks `checkInReminderSentAt` on each booking after send.
+
+### What it does
+
+1. Loads today's confirmed bookings awaiting reminder dispatch.
+2. Sends WhatsApp reminder including:
+   - guest name
+   - `*PAID*` payment status
+   - check-in command format (`CHECK-IN <BOOKING_ID>`)
+   - recommendation to complete check-in in app
+   - payout withdrawal reminder after check-in
+3. Sends email reminder with login deep-link into host booking page.
+4. Persists WhatsApp outbound log.
+5. Prevents duplicates using booking-level reminder timestamp.
+
+### Why it matters
+
+- Ensures hosts are reminded exactly on guest check-in day.
+- Supports lightweight WhatsApp-based check-in command while keeping app as primary workflow.
+
+---
+
+## 7) BullMQ Recurring Job: Host Availability Reminder
+
+### Component
+
+- File: `src/jobs/hostAvailabilityReminder.job.ts`
+- Queue name: `host.availability-reminder`
+- Schedule: cron `0 9 * * *` (daily at 09:00)
+
+### Worker action
+
+- Groups properties by host.
+- Sends daily availability reminder by both email and WhatsApp.
+- Includes current ON/OFF state per property and login path to manage availability.
+
+### What it does
+
+1. Loads all properties and groups them by host.
+2. Sends reminder to each host:
+   - set availability ON when property is ready to accept bookings
+   - set availability OFF when property is not available to avoid receiving bookings
+3. Shares current availability state list per property.
+4. Sends through email and WhatsApp for stronger delivery coverage.
+
+### Why it matters
+
+- Reduces accidental overbooking requests when hosts are unavailable.
+- Encourages proactive availability hygiene across host inventory.
+
+---
+
 ## What Is Running Right Now (When Server Is Healthy)
 
 After successful bootstrap, these long-running processes are active:
 
-1. One RabbitMQ consumer for booking pending events.
+1. One RabbitMQ consumer for booking confirmed events.
 2. One BullMQ worker for payout queue.
 3. One BullMQ worker for escalation queue.
 4. One BullMQ worker for calendar sync queue.
-5. Three repeatable job schedules registered at startup.
+5. One BullMQ worker for check-in reminder queue.
+6. One BullMQ worker for host availability reminder queue.
+7. Five repeatable job schedules registered at startup.
 
 If `npm run dev` exits early, these do not stay running.
 
@@ -169,6 +233,8 @@ If `npm run dev` exits early, these do not stay running.
    - payout sweep
    - escalation check
    - calendar sync prompt
+   - check-in reminder
+   - host availability reminder
 5. Logs show:
    - `server started`
    - booking lifecycle events

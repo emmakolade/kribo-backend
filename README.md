@@ -1,13 +1,13 @@
 # Kribo Backend
 
-Express + TypeScript backend for Kribo (hotel/shortlet booking), with preauthorization booking flow, host WhatsApp confirmation, and escrow payout model.
+Express + TypeScript backend for Kribo (hotel/shortlet booking), with Paystack checkout, host WhatsApp notifications, and escrow payout model.
 
 ## Stack
 
 - Express + TypeScript
 - MongoDB + Mongoose
-- RabbitMQ (`amqplib`) for booking.pending event handoff
-- BullMQ + Redis for scheduled jobs (payout sweep, escalation checks, calendar sync)
+- RabbitMQ (`amqplib`) for booking.confirmed event handoff
+- BullMQ + Redis for scheduled jobs (payout sweep, escalation checks, calendar sync, check-in reminders, host availability reminders)
 - Paystack / WhatsApp service wrappers
 - Zod request validation
 - Pino structured logging
@@ -22,13 +22,7 @@ Express + TypeScript backend for Kribo (hotel/shortlet booking), with preauthori
 docker compose up --build
 ```
 
-3. Seed sample data:
-
-```bash
-npm run seed
-```
-
-4. Open API docs:
+3. Open API docs:
 
 - http://localhost:4000/docs
 
@@ -52,6 +46,7 @@ Required (validated at startup in `src/config/env.ts`):
 - `PAYSTACK_SECRET_KEY`
 - `PAYSTACK_BASE_URL`
 - `PAYSTACK_WEBHOOK_URL` (recommended for deployment ops visibility; should point to your backend `/webhooks/paystack` endpoint)
+- `HOST_APP_BASE_URL` (frontend base URL for email login links, e.g. `https://app.kribo.com`)
 - `TWILIO_ACCOUNT_SID`
 - `TWILIO_AUTH_TOKEN`
 - `TWILIO_WHATSAPP_FROM`
@@ -77,7 +72,6 @@ Required (validated at startup in `src/config/env.ts`):
 - `npm run build` - compile TypeScript
 - `npm run start` - run compiled server
 - `npm run test` - run tests
-- `npm run seed` - load Lagos/Abuja/Port Harcourt sample data
 - `npm run lint` - lint code
 - `npm run format` - format code
 
@@ -106,10 +100,13 @@ Post-signup onboarding:
 
 ## Core Flow
 
-1. `POST /bookings` creates booking, atomically holds availability, initializes Paystack preauth, transitions to `payment_held`, and emits `booking.pending`.
-2. Rabbit consumer sends host WhatsApp message through Twilio with ACCEPT/DECLINE instructions.
-3. `POST /webhooks/whatsapp` verifies signature and processes idempotent accept/decline.
-4. Daily payout job transfers host payout after hold period; unique index on `Payout.bookingId` prevents double payment.
+1. `POST /bookings` creates booking, atomically holds availability, and initializes Paystack checkout.
+2. `POST /bookings/:id/confirm-payment` verifies successful payment, transitions booking to `confirmed`, then emits `booking.confirmed`.
+3. Rabbit consumer sends host WhatsApp and email booking notifications so the host can prepare.
+4. Check-in reminder worker sends same-day host WhatsApp and email reminders, including WhatsApp check-in command format.
+5. `POST /webhooks/whatsapp` verifies signature and processes `CHECK-IN <BOOKING_ID>` replies from hosts.
+6. Daily host availability reminder encourages hosts to turn property booking availability ON/OFF based on real readiness.
+7. Daily payout job transfers host payout after hold period; unique index on `Payout.bookingId` prevents double payment.
 
 ## Paystack Dashboard Setup
 

@@ -14,3 +14,7 @@ export interface UpdateUnitBodyDto {
   photos?: string[];
   isAvailable?: boolean;
 }
+
+export interface ToggleUnitAvailabilityBodyDto {
+  isAvailable: boolean;
+}

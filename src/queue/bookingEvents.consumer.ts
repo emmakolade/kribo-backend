@@ -1,27 +1,15 @@
 import amqp from 'amqplib';
 import {
-  BOOKING_CONFIRMATION_WINDOW_MINUTES_FUTURE,
-  BOOKING_CONFIRMATION_WINDOW_MINUTES_SAME_DAY,
   BOOKING_EVENTS_EXCHANGE,
   BOOKING_EVENTS_QUEUE,
-  REDIS_TIMER_PREFIX,
 } from '../config/constants';
-import { redis } from '../config/redis';
 import { env } from '../config/env';
 import { BookingModel } from '../models/booking.model';
 import { WhatsappLogModel } from '../models/whatsappLog.model';
 import { findUserById } from '../repositories/users.repository';
+import { emailService } from '../services/email.service';
 import { whatsappService } from '../services/whatsapp.service';
-import { isSameDay } from '../utils/dates';
 import { logger } from '../utils/logger';
-
-function timerSeconds(checkIn: Date): number {
-  const now = new Date();
-  const minutes = isSameDay(now, checkIn)
-    ? BOOKING_CONFIRMATION_WINDOW_MINUTES_SAME_DAY
-    : BOOKING_CONFIRMATION_WINDOW_MINUTES_FUTURE;
-  return minutes * 60;
-}
 
 export async function startBookingEventConsumer(): Promise<void> {
   const connection = await amqp.connect(env.RABBITMQ_URI);
@@ -29,7 +17,7 @@ export async function startBookingEventConsumer(): Promise<void> {
 
   await channel.assertExchange(BOOKING_EVENTS_EXCHANGE, 'topic', { durable: true });
   await channel.assertQueue(BOOKING_EVENTS_QUEUE, { durable: true });
-  await channel.bindQueue(BOOKING_EVENTS_QUEUE, BOOKING_EVENTS_EXCHANGE, 'booking.pending');
+  await channel.bindQueue(BOOKING_EVENTS_QUEUE, BOOKING_EVENTS_EXCHANGE, 'booking.confirmed');
 
   channel.consume(BOOKING_EVENTS_QUEUE, async (message) => {
     if (!message) {
@@ -50,33 +38,51 @@ export async function startBookingEventConsumer(): Promise<void> {
         return;
       }
 
-      if (!host.phoneNumber) {
-        logger.warn({ bookingId: String(booking._id), hostId: String(host._id) }, 'host has no phone number; skipping confirmation message');
-        channel.ack(message);
-        return;
+      const guest = await findUserById(String(booking.guestId));
+      const guestName = guest?.name?.trim() || 'Guest';
+
+      const bookingId = String(booking._id);
+      const checkIn = booking.checkIn.toISOString();
+      const checkOut = booking.checkOut.toISOString();
+      const paymentStatus = booking.status === 'confirmed' ? 'PAID' : 'NOT PAID';
+
+      try {
+        await emailService.sendHostConfirmedBookingEmail({
+          to: host.email,
+          bookingId,
+          guestName,
+          paymentStatus,
+          checkIn,
+          checkOut,
+        });
+      } catch (error) {
+        logger.warn({ err: error, bookingId, hostId: String(host._id) }, 'host booking email notification failed');
       }
 
-      const sent = await whatsappService.sendHostConfirmation({
-        hostPhone: host.phoneNumber,
-        bookingId: String(booking._id),
-        checkIn: booking.checkIn.toISOString(),
-        checkOut: booking.checkOut.toISOString(),
-      });
+      if (host.phoneNumber) {
+        try {
+          const sent = await whatsappService.sendHostBookingNotification({
+            hostPhone: host.phoneNumber,
+            bookingId,
+            guestName,
+            paymentStatus,
+            checkIn,
+            checkOut,
+          });
 
-      await WhatsappLogModel.create({
-        bookingId: booking._id,
-        messageType: 'host_confirmation',
-        responsePayload: sent.payload,
-      });
+          await WhatsappLogModel.create({
+            bookingId: booking._id,
+            messageType: 'host_booking_notification',
+            responsePayload: sent.payload,
+          });
+        } catch (error) {
+          logger.warn({ err: error, bookingId, hostId: String(host._id) }, 'host booking whatsapp notification failed');
+        }
+      } else {
+        logger.warn({ bookingId, hostId: String(host._id) }, 'host has no phone number; skipping booking whatsapp notification');
+      }
 
-      await redis.set(
-        `${REDIS_TIMER_PREFIX}${String(booking._id)}`,
-        'pending',
-        'EX',
-        timerSeconds(booking.checkIn),
-      );
-
-      logger.info({ bookingId: String(booking._id) }, 'host confirmation message sent');
+      logger.info({ bookingId }, 'host booking notifications processed');
       channel.ack(message);
     } catch (error) {
       logger.error({ err: error }, 'booking event consumer failed');

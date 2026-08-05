@@ -26,3 +26,7 @@ export interface SetAvailabilityBodyDto {
   date: string;
   status: 'open' | 'blocked';
 }
+
+export interface TogglePropertyBookingAvailabilityBodyDto {
+  bookingEnabled: boolean;
+}
