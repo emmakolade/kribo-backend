@@ -9,6 +9,8 @@ import { WhatsappLogModel } from '../models/whatsappLog.model';
 import { findUserById } from '../repositories/users.repository';
 import { emailService } from '../services/email.service';
 import { whatsappService } from '../services/whatsapp.service';
+import { formatBookingDisplayDate } from '../utils/dates';
+import { getHostTrustedWhatsappNumber } from '../utils/hostContact';
 import { logger } from '../utils/logger';
 
 export async function startBookingEventConsumer(): Promise<void> {
@@ -42,8 +44,8 @@ export async function startBookingEventConsumer(): Promise<void> {
       const guestName = guest?.name?.trim() || 'Guest';
 
       const bookingId = String(booking._id);
-      const checkIn = booking.checkIn.toISOString();
-      const checkOut = booking.checkOut.toISOString();
+      const checkIn = formatBookingDisplayDate(booking.checkIn);
+      const checkOut = formatBookingDisplayDate(booking.checkOut);
       const paymentStatus = booking.status === 'confirmed' ? 'PAID' : 'NOT PAID';
 
       try {
@@ -59,10 +61,11 @@ export async function startBookingEventConsumer(): Promise<void> {
         logger.warn({ err: error, bookingId, hostId: String(host._id) }, 'host booking email notification failed');
       }
 
-      if (host.phoneNumber) {
+      const trustedHostPhone = getHostTrustedWhatsappNumber(host);
+      if (trustedHostPhone) {
         try {
           const sent = await whatsappService.sendHostBookingNotification({
-            hostPhone: host.phoneNumber,
+            hostPhone: trustedHostPhone,
             bookingId,
             guestName,
             paymentStatus,
@@ -79,7 +82,7 @@ export async function startBookingEventConsumer(): Promise<void> {
           logger.warn({ err: error, bookingId, hostId: String(host._id) }, 'host booking whatsapp notification failed');
         }
       } else {
-        logger.warn({ bookingId, hostId: String(host._id) }, 'host has no phone number; skipping booking whatsapp notification');
+        logger.warn({ bookingId, hostId: String(host._id) }, 'host has no trusted whatsapp number; skipping booking whatsapp notification');
       }
 
       logger.info({ bookingId }, 'host booking notifications processed');

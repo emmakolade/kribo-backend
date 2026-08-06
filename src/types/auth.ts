@@ -30,7 +30,9 @@ export interface RegisterInput {
 
 export interface HostBusinessContactOnboardingDto {
   businessPhoneNumber: string;
+  businessPhoneCountryIso: string;
   trustedWhatsappNumber: string;
+  trustedWhatsappCountryIso: string;
   officeAddress: string;
   officeLga: string;
   officeState: string;
@@ -67,7 +69,11 @@ export interface HostOnboardingStatusDto {
   completed: boolean;
   details: {
     businessPhoneNumber: string;
+    businessPhoneCountryIso: string;
+    businessPhoneCountryDialCode: string;
     trustedWhatsappNumber: string;
+    trustedWhatsappCountryIso: string;
+    trustedWhatsappCountryDialCode: string;
     officeAddress: string;
     officeLga: string;
     officeState: string;
@@ -88,8 +94,12 @@ export interface GuestOnboardingStatusDto {
   completed: boolean;
   details: {
     phoneNumber: string;
+    phoneCountryIso: string;
+    phoneCountryDialCode: string;
     isWhatsappNumber: boolean;
     whatsappNumber: string;
+    whatsappCountryIso: string;
+    whatsappCountryDialCode: string;
     ninNumber: string;
   } | null;
 }
@@ -102,6 +112,8 @@ export interface AuthMeResponseDto {
     lastName: string;
     email: string;
     phoneNumber: string;
+    phoneCountryIso: string;
+    phoneCountryDialCode: string;
   };
   hostOnboarding: {
     propertyName: string;
@@ -119,8 +131,10 @@ export interface HostServiceAgreementOnboardingDto {
 
 export interface GuestProfileOnboardingDto {
   phoneNumber: string;
+  phoneCountryIso: string;
   isWhatsappNumber: boolean;
   whatsappNumber?: string;
+  whatsappCountryIso?: string;
   ninNumber: string;
   ninDocumentUrl: string;
 }
@@ -162,6 +176,7 @@ export interface UpdateProfileDto {
   firstName: string;
   lastName: string;
   phoneNumber?: string;
+  phoneCountryIso?: string;
 }
 
 export interface ProfileResponseDto {
@@ -171,6 +186,8 @@ export interface ProfileResponseDto {
   lastName: string;
   email: string;
   phoneNumber: string;
+  phoneCountryIso: string;
+  phoneCountryDialCode: string;
 }
 
 export interface VerifyHostBodyDto {

@@ -9,6 +9,8 @@ import { findUserById } from '../repositories/users.repository';
 import { emailService } from '../services/email.service';
 import { whatsappService } from '../services/whatsapp.service';
 import { WhatsappLogModel } from '../models/whatsappLog.model';
+import { formatBookingDisplayDate } from '../utils/dates';
+import { getHostTrustedWhatsappNumber } from '../utils/hostContact';
 import { logger } from '../utils/logger';
 
 export const checkInReminderQueue = new Queue(CHECKIN_REMINDER_QUEUE_NAME, {
@@ -56,8 +58,8 @@ export function startCheckInReminderWorker(): Worker {
         }
 
         const bookingId = String(booking._id);
-        const checkIn = booking.checkIn.toISOString();
-        const checkOut = booking.checkOut.toISOString();
+        const checkIn = formatBookingDisplayDate(booking.checkIn);
+        const checkOut = formatBookingDisplayDate(booking.checkOut);
         const guestName = guest?.name?.trim() || 'Guest';
 
         let delivered = false;
@@ -75,10 +77,11 @@ export function startCheckInReminderWorker(): Worker {
           logger.warn({ err: error, bookingId, hostId: String(host._id) }, 'host check-in reminder email failed');
         }
 
-        if (host.phoneNumber) {
+        const trustedHostPhone = getHostTrustedWhatsappNumber(host);
+        if (trustedHostPhone) {
           try {
             const result = await whatsappService.sendHostCheckInReminder({
-              hostPhone: host.phoneNumber,
+              hostPhone: trustedHostPhone,
               bookingId,
               guestName,
               checkIn,
@@ -96,7 +99,7 @@ export function startCheckInReminderWorker(): Worker {
             logger.warn({ err: error, bookingId, hostId: String(host._id) }, 'host check-in reminder whatsapp failed');
           }
         } else {
-          logger.warn({ bookingId, hostId: String(host._id) }, 'host has no phone number; skipping check-in reminder whatsapp');
+          logger.warn({ bookingId, hostId: String(host._id) }, 'host has no trusted whatsapp number; skipping check-in reminder whatsapp');
         }
 
         if (delivered) {

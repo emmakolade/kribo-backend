@@ -6,6 +6,7 @@ import { PropertyModel } from '../models/property.model';
 import { findUserById } from '../repositories/users.repository';
 import { emailService } from '../services/email.service';
 import { whatsappService } from '../services/whatsapp.service';
+import { getHostTrustedWhatsappNumber } from '../utils/hostContact';
 import { logger } from '../utils/logger';
 
 type HostPropertyStatus = {
@@ -85,10 +86,11 @@ export function startHostAvailabilityReminderWorker(): Worker {
           logger.warn({ err: error, hostId }, 'host availability reminder email failed');
         }
 
-        if (host.phoneNumber) {
+        const trustedHostPhone = getHostTrustedWhatsappNumber(host);
+        if (trustedHostPhone) {
           try {
             await whatsappService.sendGuestUpdate({
-              guestPhone: host.phoneNumber,
+              guestPhone: trustedHostPhone,
               text: buildWhatsappText(statuses),
             });
             delivered = true;

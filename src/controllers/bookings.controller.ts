@@ -1,6 +1,5 @@
 import type { Request, Response } from 'express';
 import {
-  confirmBookingPaymentFromWebhook,
   createBookingFromPropertyRequest,
   createBookingRequest,
   decideBookingByHost,
@@ -8,14 +7,12 @@ import {
   getBookingApiStatus,
   listBookings,
   getBookingStats,
-  confirmBookingPayment,
   markBookingCheckedIn,
   markBookingCheckedInByHost,
   withdrawBookingPayoutByHost,
 } from '../services/bookings.service';
 import { env } from '../config/env';
 import { whatsappService } from '../services/whatsapp.service';
-import { paystackService } from '../services/paystack.service';
 import type { CreateBookingBodyDto, WhatsappWebhookBodyDto } from '../types/bookings.dto';
 import { findUserByPhoneCandidates } from '../repositories/users.repository';
 import { AppError } from '../utils/AppError';
@@ -64,12 +61,28 @@ function extractCheckInCommand(input: string): { bookingId: string } | null {
   return { bookingId };
 }
 
+function extractCheckInFromWebhookPayload(payload: WhatsappWebhookBodyDto): { bookingId: string } | null {
+  const body = String(payload.Body ?? '').trim();
+  const buttonPayload = String(payload.ButtonPayload ?? '').trim();
+  const buttonText = String(payload.ButtonText ?? '').trim();
+
+  const candidates = [buttonPayload, body, buttonText].filter((value) => value.length > 0);
+
+  for (const candidate of candidates) {
+    const command = extractCheckInCommand(candidate);
+    if (command) {
+      return command;
+    }
+  }
+
+  return null;
+}
+
 export async function createBookingController(req: Request, res: Response): Promise<void> {
   const body = req.body as CreateBookingBodyDto & {
     propertyId?: string;
     roomType?: string;
     nightlyRate?: number;
-    paymentMethod?: 'card' | 'bank_transfer' | 'transfer';
   };
 
   if (body.propertyId) {
@@ -78,13 +91,17 @@ export async function createBookingController(req: Request, res: Response): Prom
       propertyId: body.propertyId,
       checkIn: body.checkIn,
       checkOut: body.checkOut,
+      email: body.email,
       roomType: body.roomType,
       nightlyRate: body.nightlyRate,
-      paymentMethod: body.paymentMethod,
     });
 
     res.status(201).json(result);
     return;
+  }
+
+  if (!body.unitId) {
+    throw new AppError('unitId is required when propertyId is not provided', 400, 'VALIDATION_ERROR');
   }
 
   const result = await createBookingRequest({
@@ -92,22 +109,10 @@ export async function createBookingController(req: Request, res: Response): Prom
     unitId: body.unitId,
     checkIn: body.checkIn,
     checkOut: body.checkOut,
-    paymentMethod: body.paymentMethod,
+    email: body.email,
   });
 
   res.status(201).json(result);
-}
-
-export async function confirmBookingPaymentController(req: Request, res: Response): Promise<void> {
-  const id = getRequiredIdParam(req);
-
-  const result = await confirmBookingPayment({
-    bookingId: id,
-    requesterId: req.user!.userId,
-    requesterRole: req.user!.role === 'admin' ? 'admin' : 'guest',
-  });
-
-  res.status(200).json(result);
 }
 
 export async function getBookingStatusController(req: Request, res: Response): Promise<void> {
@@ -157,8 +162,7 @@ export async function whatsappWebhookController(req: Request, res: Response): Pr
   }
 
   const from = String(payload.From ?? '');
-  const text = String(payload.Body ?? '').trim();
-  const checkInCommand = extractCheckInCommand(text);
+  const checkInCommand = extractCheckInFromWebhookPayload(payload);
 
   if (!checkInCommand || !from) {
     res.status(200).json({ ok: true, ignored: true });
@@ -204,58 +208,6 @@ export async function whatsappWebhookController(req: Request, res: Response): Pr
   }
 }
 
-export async function paystackWebhookController(req: Request, res: Response): Promise<void> {
-  const signature = req.headers['x-paystack-signature'];
-  const signatureValue = Array.isArray(signature) ? signature[0] : signature;
-  const rawBody = req.rawBody ?? '';
-
-  const verified = paystackService.verifyWebhookSignature({
-    rawBody,
-    signature: signatureValue,
-  });
-
-  if (!verified) {
-    throw new AppError('Invalid webhook signature', 401, 'INVALID_WEBHOOK_SIGNATURE');
-  }
-
-  const payload = req.body as {
-    event?: string;
-    data?: {
-      reference?: string;
-      status?: string;
-      id?: string | number;
-    };
-  };
-
-  const event = String(payload.event ?? '').toLowerCase();
-  const isChargeSuccess = event === 'charge.success';
-  const reference = payload.data?.reference;
-  const status = String(payload.data?.status ?? '').toLowerCase();
-  const eventId = String(payload.data?.id ?? '').trim();
-
-  const isSuccessStatus = status === 'success';
-
-  if (!isChargeSuccess || !isSuccessStatus || !reference || !eventId) {
-    logger.info(
-      {
-        event,
-        status: payload.data?.status,
-        hasReference: Boolean(reference),
-      },
-      'paystack webhook ignored',
-    );
-    res.status(200).json({ ok: true, ignored: true });
-    return;
-  }
-
-  const result = await confirmBookingPaymentFromWebhook({
-    paystackReference: reference,
-    webhookId: `paystack:${event}:${eventId}`,
-  });
-
-  res.status(200).json({ ok: true, ...result });
-}
-
 export async function checkInController(req: Request, res: Response): Promise<void> {
   const id = getRequiredIdParam(req);
   await markBookingCheckedIn(id);
@@ -289,7 +241,6 @@ export async function hostActionController(req: Request, res: Response): Promise
   res.status(200).json({
     bookingId: id,
     status: result.status,
-    ttlSeconds: result.ttlSeconds,
   });
 }
 
@@ -309,6 +260,5 @@ export async function hostWithdrawController(req: Request, res: Response): Promi
   res.status(200).json({
     bookingId: id,
     status: result.status,
-    ttlSeconds: result.ttlSeconds,
   });
 }

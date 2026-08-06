@@ -9,8 +9,27 @@ import { schedulePayoutSweep, startPayoutWorker } from './jobs/payoutSweep.job';
 import { startBookingEventConsumer } from './queue/bookingEvents.consumer';
 import { logger } from './utils/logger';
 
+async function dropObsoleteBookingIndexes(): Promise<void> {
+  try {
+    const bookingsCollection = mongoose.connection.collection('bookings');
+    const indexes = await bookingsCollection.indexes();
+    const hasLegacyPaystackReferenceIndex = indexes.some((index) => index.name === 'paystackReference_1');
+
+    if (!hasLegacyPaystackReferenceIndex) {
+      return;
+    }
+
+    await bookingsCollection.dropIndex('paystackReference_1');
+    logger.info('dropped obsolete bookings.paystackReference_1 index');
+  }
+  catch (error) {
+    logger.warn({ err: error }, 'could not drop obsolete bookings index; continuing startup');
+  }
+}
+
 async function bootstrap(): Promise<void> {
   await mongoose.connect(env.MONGO_URI);
+  await dropObsoleteBookingIndexes();
   await startBookingEventConsumer();
 
   await schedulePayoutSweep();

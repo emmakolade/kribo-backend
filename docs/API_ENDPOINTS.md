@@ -46,7 +46,9 @@ This document reflects the currently implemented REST endpoints in the backend.
 | DELETE | /units/:id                                      | Yes  | host                        |
 | DELETE | /units/property/:propertyId                     | Yes  | host                        |
 | POST   | /bookings                                       | Yes  | guest                       |
-| POST   | /bookings/:id/confirm-payment                   | Yes  | guest/admin                 |
+| POST   | /payments/initialize                            | Yes  | guest/admin                 |
+| GET    | /payments/:reference/callback-status            | No   | Public                      |
+| GET    | /payments/:reference/status                     | Yes  | guest/admin                 |
 | GET    | /bookings                                       | Yes  | Any                         |
 | GET    | /bookings/stats                                 | Yes  | host/admin                  |
 | GET    | /bookings/:id                                   | Yes  | Any                         |
@@ -261,7 +263,9 @@ Host register body uses the same fields with `"role": "host"`.
     "firstName": "Jane",
     "lastName": "Doe",
     "email": "jane@example.com",
-    "phoneNumber": "+2348012345678"
+    "phoneNumber": "+2348012345678",
+    "phoneCountryIso": "NG",
+    "phoneCountryDialCode": "+234"
   },
   "hostOnboarding": {
     "propertyName": "Harborlight Suites",
@@ -270,7 +274,11 @@ Host register body uses the same fields with `"role": "host"`.
       "completed": false,
       "details": {
         "businessPhoneNumber": "+2348012345678",
+        "businessPhoneCountryIso": "NG",
+        "businessPhoneCountryDialCode": "+234",
         "trustedWhatsappNumber": "+2348098765432",
+        "trustedWhatsappCountryIso": "NG",
+        "trustedWhatsappCountryDialCode": "+234",
         "officeAddress": "12 Admiralty Way, Lekki",
         "officeLga": "Eti-Osa",
         "officeState": "Lagos",
@@ -292,8 +300,12 @@ Host register body uses the same fields with `"role": "host"`.
       "completed": false,
       "details": {
         "phoneNumber": "+2348012345678",
+        "phoneCountryIso": "NG",
+        "phoneCountryDialCode": "+234",
         "isWhatsappNumber": true,
         "whatsappNumber": "+2348012345678",
+        "whatsappCountryIso": "NG",
+        "whatsappCountryDialCode": "+234",
         "ninNumber": "12345678901"
       }
     }
@@ -326,7 +338,9 @@ Host register body uses the same fields with `"role": "host"`.
   "firstName": "Jane",
   "lastName": "Doe",
   "email": "jane@example.com",
-  "phoneNumber": "+2348012345678"
+  "phoneNumber": "+2348012345678",
+  "phoneCountryIso": "NG",
+  "phoneCountryDialCode": "+234"
 }
 ```
 
@@ -339,10 +353,12 @@ Host register body uses the same fields with `"role": "host"`.
 {
   "firstName": "Jane",
   "lastName": "Doe",
-  "phoneNumber": "+2348012345678"
+  "phoneNumber": "08123456789",
+  "phoneCountryIso": "NG"
 }
 ```
 
+- `phoneNumber` is submitted as local/national format alongside `phoneCountryIso` and saved in E.164 format.
 - Response 200: same as `GET /auth/profile`.
 
 ### POST /auth/change-password
@@ -394,14 +410,18 @@ All endpoints below require auth and are host-only.
 
 ```json
 {
-  "businessPhoneNumber": "+2348012345678",
-  "trustedWhatsappNumber": "+2348098765432",
+  "businessPhoneNumber": "08123456789",
+  "businessPhoneCountryIso": "NG",
+  "trustedWhatsappNumber": "08109876543",
+  "trustedWhatsappCountryIso": "NG",
   "officeAddress": "12 Admiralty Way, Lekki",
   "officeLga": "Eti-Osa",
   "officeState": "Lagos",
   "website": "https://example.com"
 }
 ```
+
+- `businessPhoneNumber` and `trustedWhatsappNumber` are normalized and persisted in E.164 format.
 
 - Response 200:
 
@@ -545,16 +565,19 @@ All endpoints below require auth and are host-only.
 
 ```json
 {
-  "phoneNumber": "+2348012345678",
+  "phoneNumber": "08123456789",
+  "phoneCountryIso": "NG",
   "isWhatsappNumber": false,
-  "whatsappNumber": "+2348098765432",
+  "whatsappNumber": "08109876543",
+  "whatsappCountryIso": "NG",
   "ninNumber": "12345678901",
   "ninDocumentUrl": "https://res.cloudinary.com/your-cloud/image/
   upload/v123/nin.jpg"
 }
 ```
 
-- Note: `whatsappNumber` is required when `isWhatsappNumber` is `false`.
+- Note: `whatsappNumber` and `whatsappCountryIso` are required when `isWhatsappNumber` is `false`.
+- All submitted phone numbers are normalized and stored in E.164 format.
 - Response 200:
 
 ```json
@@ -878,7 +901,6 @@ Alternative property-first body:
   "propertyId": "688...",
   "checkIn": "2026-08-01",
   "checkOut": "2026-08-03",
-  "paymentMethod": "bank_transfer",
   "roomType": "Entire 1-bedroom",
   "nightlyRate": 75000
 }
@@ -891,29 +913,77 @@ Alternative property-first body:
 ```json
 {
   "bookingId": "688...",
-  "status": "pending",
-  "paystackReference": "psk_ref_...",
-  "paystackCheckoutUrl": "https://checkout.paystack.com/..."
+  "status": "pending"
 }
 ```
 
 - Payment flow note:
-  - Open `paystackCheckoutUrl` in the client to complete payment.
-  - After checkout, call `POST /bookings/:id/confirm-payment` to verify and move booking to `confirmed`.
-  - Once confirmed, host receives a WhatsApp booking notification with booking details.
-  - `paymentMethod` supports `card`, `bank_transfer`, and `transfer`.
+  - Booking creation only creates a pending booking draft.
+  - Initialize checkout using `POST /payments/initialize`.
+  - Redirect the user to the returned `checkoutUrl`.
+  - Backend webhooks and verification determine final payment status.
+  - Once payment is successful, booking transitions to `confirmed` and host notification events are emitted.
 
-### POST /bookings/:id/confirm-payment
+### POST /payments/initialize
 
 - Auth: required (`guest` owner or `admin`)
-- Body: none
-- Behavior: verifies Paystack transaction status and transitions booking to `confirmed` when successful.
+- Body:
+
+```json
+{
+  "bookingId": "688...",
+  "email": "guest@example.com"
+}
+```
+
+- Behavior:
+  - validates booking ownership and pending state;
+  - initializes Paystack checkout with a unique backend reference;
+  - stores a pending payment record for webhook/idempotent processing.
 - Response 200:
 
 ```json
 {
   "bookingId": "688...",
-  "status": "confirmed"
+  "paymentReference": "kribo_pay_...",
+  "status": "pending",
+  "checkoutUrl": "https://checkout.paystack.com/..."
+}
+```
+
+### GET /payments/:reference/status
+
+- Auth: required (`guest` owner or `admin`)
+- Behavior:
+  - returns canonical backend payment state;
+  - if payment is still pending, backend verifies with Paystack before responding;
+  - returns booking status alongside payment status.
+- Response 200:
+
+```json
+{
+  "bookingId": "688...",
+  "paymentReference": "kribo_pay_...",
+  "paymentStatus": "pending",
+  "bookingStatus": "pending"
+}
+```
+
+### GET /payments/:reference/callback-status
+
+- Auth: none
+- Purpose:
+  - supports payment callback pages without forcing sign-in;
+  - returns canonical payment and booking status using only the payment reference;
+  - when payment is still pending, backend verifies with Paystack before responding.
+- Response 200:
+
+```json
+{
+  "bookingId": "688...",
+  "paymentReference": "kribo_pay_...",
+  "paymentStatus": "pending",
+  "bookingStatus": "pending"
 }
 ```
 
@@ -951,10 +1021,12 @@ Alternative property-first body:
 ```json
 {
   "bookingId": "688...",
-  "status": "confirmed",
-  "ttlSeconds": 0
+  "status": "confirmed"
 }
+
 ```
+
+- `status` can be: `pending`, `payment_failed`, `confirmed`, `declined`, `checked_in`, `completed`, `cancelled`, `paid_out`.
 
 ---
 
@@ -982,8 +1054,7 @@ Alternative property-first body:
 ```json
 {
   "bookingId": "688...",
-  "status": "confirmed",
-  "ttlSeconds": 0
+  "status": "confirmed"
 }
 ```
 
@@ -995,8 +1066,7 @@ Alternative property-first body:
 ```json
 {
   "bookingId": "688...",
-  "status": "paid_out",
-  "ttlSeconds": 0
+  "status": "paid_out"
 }
 ```
 
@@ -1011,12 +1081,17 @@ Alternative property-first body:
   - `x-twilio-signature`
 
 - Purpose: verifies Twilio signature and processes host check-in command replies.
+- Supported host reply inputs:
+  - text command: `CHECK-IN <bookingId>`
+  - WhatsApp quick-reply/button payload from Twilio (for interactive templates)
 
 ### POST /webhooks/paystack
 
 - Auth: none
 - Signature: `x-paystack-signature` validated with your Paystack secret key against raw request body.
-- Purpose: automatically confirms a booking payment when a `charge.success` event with `data.status=success` is received for a booking's `paystackReference`.
+- Purpose:
+  - marks booking `confirmed` when `charge.success` with `data.status=success` is received;
+  - marks booking `payment_failed` when failed charge outcome is received (for example `charge.failed` or `data.status=failed`).
 - Dashboard setup: set your Paystack webhook URL to your public backend URL + `/webhooks/paystack` (for example: `https://api.kribo.com/webhooks/paystack`).
 - Notes:
 

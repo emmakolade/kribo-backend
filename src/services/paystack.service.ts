@@ -5,7 +5,7 @@ import { AppError } from '../utils/AppError';
 
 export interface PaystackService {
   initializeTransaction(input: {
-    amount: number;
+    amountMinor: number;
     email: string;
     metadata: Record<string, unknown>;
     callbackUrl?: string;
@@ -23,7 +23,7 @@ export interface PaystackService {
     bankCode: string;
   }): Promise<{ accountNumber: string; accountName: string; bankCode: string }>;
   listBanks(): Promise<Array<{ name: string; code: string }>>;
-  verifyTransaction(reference: string): Promise<{ reference: string; paid: boolean }>;
+  verifyTransaction(reference: string): Promise<{ reference: string; paid: boolean; status: string; paidAt?: Date }>;
   verifyWebhookSignature(input: { rawBody: string; signature?: string }): boolean;
 }
 
@@ -51,7 +51,7 @@ class LivePaystackService implements PaystackService {
   }
 
   public async initializeTransaction(input: {
-    amount: number;
+    amountMinor: number;
     email: string;
     metadata: Record<string, unknown>;
     callbackUrl?: string;
@@ -60,7 +60,7 @@ class LivePaystackService implements PaystackService {
   }): Promise<{ reference: string; authorizationUrl: string; accessCode: string }> {
     try {
       const { data } = await this.client.post('/transaction/initialize', {
-        amount: input.amount * 100,
+        amount: input.amountMinor,
         email: input.email,
         currency: input.currency ?? 'NGN',
         reference: input.reference,
@@ -140,10 +140,13 @@ class LivePaystackService implements PaystackService {
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  public async verifyTransaction(reference: string): Promise<{ reference: string; paid: boolean }> {
+  public async verifyTransaction(reference: string): Promise<{ reference: string; paid: boolean; status: string; paidAt?: Date }> {
     const { data } = await this.client.get(`/transaction/verify/${reference}`);
-    const paid = String(data.data.status).toLowerCase() === 'success';
-    return { reference, paid };
+    const status = String(data.data.status ?? '').toLowerCase();
+    const paid = status === 'success';
+    const paidAtRaw = data.data.paid_at as string | undefined;
+    const paidAt = paidAtRaw ? new Date(paidAtRaw) : undefined;
+    return { reference, paid, status, paidAt };
   }
 
   public verifyWebhookSignature(input: { rawBody: string; signature?: string }): boolean {

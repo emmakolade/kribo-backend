@@ -1,23 +1,21 @@
 import { Types } from 'mongoose';
-import { REDIS_TIMER_PREFIX } from '../config/constants';
 import { env } from '../config/env';
-import { redis } from '../config/redis';
 import { BookingModel } from '../models/booking.model';
 import { PropertyModel } from '../models/property.model';
 import { UnitModel } from '../models/unit.model';
 import { UserModel } from '../models/user.model';
 import { createBooking, findBookingById, setBookingWebhookProcessed, updateBookingStatus } from '../repositories/bookings.repository';
 import { findUserById } from '../repositories/users.repository';
-import { publishBookingEvent } from '../queue/bookingEvents.producer';
 import { BookingStatus, canTransition } from '../types/booking';
 import { AppError } from '../utils/AppError';
 import { dateRange } from '../utils/dates';
 import { logger } from '../utils/logger';
 import { calculateCommission, calculatePayout } from './commission.service';
-import { paystackService } from './paystack.service';
+import { refundBookingPayment } from './payments.service';
 
 type BookingApiStatus =
   | 'pending'
+  | 'payment_failed'
   | 'confirmed'
   | 'declined'
   | 'checked_in'
@@ -33,7 +31,6 @@ interface BookingApiView {
   guestCount: number;
   checkIn: string;
   checkOut: string;
-  ttlSeconds: number;
   createdAt: string;
   guestDetails: {
     firstName: string;
@@ -85,13 +82,22 @@ function splitNameParts(name: string): { firstName: string; lastName: string } {
   };
 }
 
-async function getBookingTtlSeconds(bookingId: string, status: BookingStatus): Promise<number> {
-  if (status !== BookingStatus.PENDING) {
-    return 0;
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function resolveCheckoutEmail(input: { requestEmail?: string; accountEmail?: string }): string {
+  const requestEmail = input.requestEmail?.trim().toLowerCase();
+  if (requestEmail && isValidEmail(requestEmail)) {
+    return requestEmail;
   }
 
-  const ttl = await redis.ttl(`${REDIS_TIMER_PREFIX}${bookingId}`);
-  return ttl >= 0 ? ttl : 0;
+  const accountEmail = input.accountEmail?.trim().toLowerCase();
+  if (accountEmail && isValidEmail(accountEmail)) {
+    return accountEmail;
+  }
+
+  throw new AppError('Please enter a valid email address', 400, 'INVALID_CHECKOUT_EMAIL');
 }
 
 async function mapToBookingApiView(booking: {
@@ -116,7 +122,6 @@ async function mapToBookingApiView(booking: {
   const baseAmount = Math.max(0, booking.totalAmount - bookingServiceFee);
   const nightlyRate = unit?.pricePerNight ?? Math.max(0, Math.round(baseAmount / nights));
   const bookingId = String(booking._id);
-  const ttlSeconds = await getBookingTtlSeconds(bookingId, booking.status);
   const nameParts = splitNameParts(guest?.name ?? '');
 
   return {
@@ -127,7 +132,6 @@ async function mapToBookingApiView(booking: {
     guestCount: unit?.maxGuests ?? 1,
     checkIn: checkIn.toISOString().slice(0, 10),
     checkOut: checkOut.toISOString().slice(0, 10),
-    ttlSeconds,
     createdAt: new Date(booking.createdAt).toISOString(),
     guestDetails: {
       firstName: nameParts.firstName,
@@ -198,8 +202,11 @@ export async function createBookingRequest(input: {
   unitId: string;
   checkIn: string;
   checkOut: string;
-  paymentMethod?: 'card' | 'bank_transfer' | 'transfer';
-}): Promise<{ bookingId: string; status: BookingStatus; paystackReference: string; paystackCheckoutUrl: string }> {
+  email?: string;
+}): Promise<{
+  bookingId: string;
+  status: BookingStatus;
+}> {
   const guest = await findUserById(input.guestId);
   if (!guest) {
     throw new AppError('Guest not found', 404, 'GUEST_NOT_FOUND');
@@ -231,21 +238,10 @@ export async function createBookingRequest(input: {
   const totalAmount = bookingSubtotal + serviceFee;
   const commissionAmount = calculateCommission(bookingSubtotal);
   const payoutAmount = calculatePayout(bookingSubtotal);
-
-  const checkoutPayload = {
-    amount: totalAmount,
-    email: guest.email,
-    currency: 'NGN',
-    metadata: {
-      guestId: input.guestId,
-      unitId: input.unitId,
-      checkIn: input.checkIn,
-      checkOut: input.checkOut,
-    },
-    callbackUrl: env.PAYSTACK_BOOKING_CALLBACK_URL,
-  };
-
-  const checkout = await paystackService.initializeTransaction(checkoutPayload);
+  resolveCheckoutEmail({
+    requestEmail: input.email,
+    accountEmail: guest.email,
+  });
 
   const booking = await createBooking({
     guestId: new Types.ObjectId(input.guestId),
@@ -257,17 +253,13 @@ export async function createBookingRequest(input: {
     commissionAmount,
     payoutAmount,
     status: BookingStatus.PENDING,
-    paystackReference: checkout.reference,
-    paymentMethod: input.paymentMethod ?? 'bank_transfer',
     stateHistory: ([{ status: BookingStatus.PENDING, timestamp: new Date() }] as unknown) as never,
   });
 
-  logger.info({ bookingId: String(booking._id) }, 'booking created and checkout initialized');
+  logger.info({ bookingId: String(booking._id) }, 'booking created and awaiting payment initialization');
   return {
     bookingId: String(booking._id),
     status: booking.status,
-    paystackReference: checkout.reference,
-    paystackCheckoutUrl: checkout.authorizationUrl,
   };
 }
 
@@ -276,10 +268,13 @@ export async function createBookingFromPropertyRequest(input: {
   propertyId: string;
   checkIn: string;
   checkOut: string;
+  email?: string;
   roomType?: string;
   nightlyRate?: number;
-  paymentMethod?: 'card' | 'bank_transfer' | 'transfer';
-}): Promise<{ bookingId: string; status: BookingStatus; paystackReference: string; paystackCheckoutUrl: string }> {
+}): Promise<{
+  bookingId: string;
+  status: BookingStatus;
+}> {
   const unitId = await resolveUnitForPropertyBooking({
     propertyId: input.propertyId,
     roomType: input.roomType,
@@ -291,114 +286,30 @@ export async function createBookingFromPropertyRequest(input: {
     unitId,
     checkIn: input.checkIn,
     checkOut: input.checkOut,
-    paymentMethod: input.paymentMethod,
+    email: input.email,
   });
 }
 
-export async function confirmBookingPayment(input: {
-  bookingId: string;
-  requesterId: string;
-  requesterRole: 'guest' | 'admin';
-}): Promise<{ bookingId: string; status: BookingStatus }> {
-  const booking = await findBookingById(input.bookingId);
-  if (!booking) {
-    throw new AppError('Booking not found', 404, 'BOOKING_NOT_FOUND');
-  }
-
-  const isAdmin = input.requesterRole === 'admin';
-  const isGuestOwner = input.requesterRole === 'guest' && String(booking.guestId) === input.requesterId;
-  if (!isAdmin && !isGuestOwner) {
-    throw new AppError('Booking not found', 404, 'BOOKING_NOT_FOUND');
-  }
-
-  if (booking.status === BookingStatus.CONFIRMED) {
-    return { bookingId: String(booking._id), status: booking.status };
-  }
-
-  if (booking.status !== BookingStatus.PENDING) {
-    throw new AppError('Booking is not awaiting payment confirmation', 409, 'INVALID_BOOKING_STATE');
-  }
-
-  const transaction = await paystackService.verifyTransaction(booking.paystackReference);
-  const paid = transaction.paid;
-
-  if (!paid) {
-    throw new AppError('Payment has not been completed', 409, 'PAYMENT_NOT_COMPLETED');
-  }
-
-  await transitionBooking(String(booking._id), BookingStatus.CONFIRMED);
-  await publishBookingEvent('booking.confirmed', {
-    bookingId: String(booking._id),
-  });
-
-  logger.info({ bookingId: String(booking._id) }, 'payment confirmed and host notified');
-  return { bookingId: String(booking._id), status: BookingStatus.CONFIRMED };
-}
-
-export async function confirmBookingPaymentFromWebhook(input: {
-  paystackReference: string;
-  webhookId: string;
-}): Promise<{ processed: boolean; bookingId?: string; status?: BookingStatus }> {
-  const booking = await BookingModel.findOne({ paystackReference: input.paystackReference }).lean();
-  if (!booking) {
-    logger.warn({ reference: input.paystackReference }, 'paystack webhook reference not mapped to booking');
-    return { processed: false };
-  }
-
-  const bookingId = String(booking._id);
-  if (booking.lastWebhookId && booking.lastWebhookId === input.webhookId) {
-    logger.info({ bookingId, webhookId: input.webhookId }, 'duplicate paystack webhook ignored');
-    return { processed: true, bookingId, status: booking.status };
-  }
-
-  if (booking.status === BookingStatus.CONFIRMED) {
-    await setBookingWebhookProcessed(bookingId, input.webhookId);
-    return { processed: true, bookingId, status: booking.status };
-  }
-
-  if (booking.status !== BookingStatus.PENDING) {
-    await setBookingWebhookProcessed(bookingId, input.webhookId);
-    logger.info({ bookingId, status: booking.status }, 'paystack webhook ignored for non-pending booking');
-    return { processed: true, bookingId, status: booking.status };
-  }
-
-  await transitionBooking(bookingId, BookingStatus.CONFIRMED);
-  await setBookingWebhookProcessed(bookingId, input.webhookId);
-  await publishBookingEvent('booking.confirmed', {
-    bookingId,
-  });
-
-  logger.info({ bookingId }, 'payment confirmed from paystack webhook');
-  return { processed: true, bookingId, status: BookingStatus.CONFIRMED };
-}
-
-export async function getBookingStatus(bookingId: string): Promise<{ status: BookingStatus; ttlSeconds: number | null }> {
+export async function getBookingStatus(bookingId: string): Promise<{ status: BookingStatus }> {
   const booking = await findBookingById(bookingId);
   if (!booking) {
     throw new AppError('Booking not found', 404, 'BOOKING_NOT_FOUND');
   }
 
-  const ttl = booking.status === BookingStatus.PENDING
-    ? await redis.ttl(`${REDIS_TIMER_PREFIX}${bookingId}`)
-    : -1;
-
   return {
     status: booking.status,
-    ttlSeconds: ttl >= 0 ? ttl : null,
   };
 }
 
 export async function getBookingApiStatus(bookingId: string): Promise<{
   bookingId: string;
   status: BookingApiStatus;
-  ttlSeconds: number;
 }> {
   const result = await getBookingStatus(bookingId);
 
   return {
     bookingId,
     status: toBookingApiStatus(result.status),
-    ttlSeconds: result.ttlSeconds ?? 0,
   };
 }
 
@@ -509,12 +420,11 @@ export async function processHostDecision(input: {
   }
 
   if (input.decision === 'decline') {
-    await paystackService.refundTransaction(booking.paystackReference);
+    await refundBookingPayment(input.bookingId);
     await transitionBooking(input.bookingId, BookingStatus.DECLINED);
   }
 
   await setBookingWebhookProcessed(input.bookingId, input.webhookId);
-  await redis.del(`${REDIS_TIMER_PREFIX}${input.bookingId}`);
 
   const updated = await findBookingById(input.bookingId);
   if (!updated) {
@@ -553,7 +463,7 @@ export async function decideBookingByHost(input: {
   requesterId: string;
   requesterRole: 'host' | 'admin';
   action: 'check-in';
-}): Promise<{ status: BookingApiStatus; ttlSeconds: number }> {
+}): Promise<{ status: BookingApiStatus }> {
   const booking = await findBookingById(input.bookingId);
   if (!booking) {
     throw new AppError('Booking not found', 404, 'BOOKING_NOT_FOUND');
@@ -566,7 +476,6 @@ export async function decideBookingByHost(input: {
   await markBookingCheckedIn(input.bookingId);
   return {
     status: 'checked_in',
-    ttlSeconds: 0,
   };
 }
 
@@ -578,7 +487,7 @@ export async function markBookingCheckedInByHost(input: {
   bookingId: string;
   requesterId: string;
   requesterRole: 'host' | 'admin';
-}): Promise<{ status: BookingApiStatus; ttlSeconds: number }> {
+}): Promise<{ status: BookingApiStatus }> {
   const booking = await findBookingById(input.bookingId);
   if (!booking) {
     throw new AppError('Booking not found', 404, 'BOOKING_NOT_FOUND');
@@ -592,7 +501,6 @@ export async function markBookingCheckedInByHost(input: {
 
   return {
     status: 'checked_in',
-    ttlSeconds: 0,
   };
 }
 
@@ -600,7 +508,7 @@ export async function withdrawBookingPayoutByHost(input: {
   bookingId: string;
   requesterId: string;
   requesterRole: 'host' | 'admin';
-}): Promise<{ status: BookingApiStatus; ttlSeconds: number }> {
+}): Promise<{ status: BookingApiStatus }> {
   const booking = await findBookingById(input.bookingId);
   if (!booking) {
     throw new AppError('Booking not found', 404, 'BOOKING_NOT_FOUND');
@@ -613,7 +521,6 @@ export async function withdrawBookingPayoutByHost(input: {
   if (booking.status === BookingStatus.PAID_OUT) {
     return {
       status: 'paid_out',
-      ttlSeconds: 0,
     };
   }
 
@@ -622,7 +529,6 @@ export async function withdrawBookingPayoutByHost(input: {
     await transitionBooking(input.bookingId, BookingStatus.PAID_OUT);
     return {
       status: 'paid_out',
-      ttlSeconds: 0,
     };
   }
 
@@ -630,7 +536,6 @@ export async function withdrawBookingPayoutByHost(input: {
     await transitionBooking(input.bookingId, BookingStatus.PAID_OUT);
     return {
       status: 'paid_out',
-      ttlSeconds: 0,
     };
   }
 
@@ -653,7 +558,7 @@ export async function cancelBooking(
   }
 
   if (booking.status === BookingStatus.CONFIRMED) {
-    await paystackService.refundTransaction(booking.paystackReference);
+    await refundBookingPayment(bookingId);
   }
 
   await transitionBooking(bookingId, to);

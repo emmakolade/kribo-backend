@@ -100,13 +100,15 @@ Post-signup onboarding:
 
 ## Core Flow
 
-1. `POST /bookings` creates booking, atomically holds availability, and initializes Paystack checkout.
-2. `POST /bookings/:id/confirm-payment` verifies successful payment, transitions booking to `confirmed`, then emits `booking.confirmed`.
-3. Rabbit consumer sends host WhatsApp and email booking notifications so the host can prepare.
-4. Check-in reminder worker sends same-day host WhatsApp and email reminders, including WhatsApp check-in command format.
-5. `POST /webhooks/whatsapp` verifies signature and processes `CHECK-IN <BOOKING_ID>` replies from hosts.
-6. Daily host availability reminder encourages hosts to turn property booking availability ON/OFF based on real readiness.
-7. Daily payout job transfers host payout after hold period; unique index on `Payout.bookingId` prevents double payment.
+1. `POST /bookings` creates a pending booking draft.
+2. `POST /payments/initialize` starts Paystack checkout and stores a pending payment record.
+3. `POST /webhooks/paystack` verifies signatures, processes webhook events idempotently, and finalizes payment status.
+4. `GET /payments/:reference/status` gives the frontend canonical payment + booking state during callback/polling.
+5. Rabbit consumer sends host WhatsApp and email booking notifications after successful payment confirmation.
+6. Check-in reminder worker sends same-day host WhatsApp and email reminders, including WhatsApp check-in command format.
+7. `POST /webhooks/whatsapp` verifies signature and processes `CHECK-IN <BOOKING_ID>` replies from hosts.
+8. Daily host availability reminder encourages hosts to turn property booking availability ON/OFF based on real readiness.
+9. Daily payout job transfers host payout after hold period; unique index on `Payout.bookingId` prevents double payment.
 
 ## Paystack Dashboard Setup
 

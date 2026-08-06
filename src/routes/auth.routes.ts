@@ -110,6 +110,7 @@ const updateProfileSchema = z.object({
     firstName: z.string().min(2),
     lastName: z.string().min(2),
     phoneNumber: z.string().min(7).optional(),
+    phoneCountryIso: z.string().regex(/^[A-Za-z]{2}$/).optional(),
   }),
   query: z.object({}).optional(),
   params: z.object({}).optional(),
@@ -131,7 +132,9 @@ const changePasswordSchema = z.object({
 const hostBusinessContactSchema = z.object({
   body: z.object({
     businessPhoneNumber: z.string().min(7),
+    businessPhoneCountryIso: z.string().regex(/^[A-Za-z]{2}$/),
     trustedWhatsappNumber: z.string().min(7),
+    trustedWhatsappCountryIso: z.string().regex(/^[A-Za-z]{2}$/),
     officeAddress: z.string().min(5),
     officeLga: z.string().min(2),
     officeState: z.string().min(2),
@@ -185,13 +188,18 @@ const hostServiceAgreementSchema = z.object({
 const guestProfileSchema = z.object({
   body: z.object({
     phoneNumber: z.string().min(7),
+    phoneCountryIso: z.string().regex(/^[A-Za-z]{2}$/),
     isWhatsappNumber: z.boolean(),
     whatsappNumber: z.string().min(7).optional(),
+    whatsappCountryIso: z.string().regex(/^[A-Za-z]{2}$/).optional(),
     ninNumber: z.string().min(6),
     ninDocumentUrl: z.url(),
   }).refine((value) => value.isWhatsappNumber || Boolean(value.whatsappNumber), {
     message: 'whatsappNumber is required when isWhatsappNumber is false',
     path: ['whatsappNumber'],
+  }).refine((value) => value.isWhatsappNumber || Boolean(value.whatsappCountryIso), {
+    message: 'whatsappCountryIso is required when isWhatsappNumber is false',
+    path: ['whatsappCountryIso'],
   }),
   query: z.object({}).optional(),
   params: z.object({}).optional(),

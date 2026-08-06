@@ -13,10 +13,6 @@ export async function findBookingById(bookingId: string): Promise<BookingDocumen
   return BookingModel.findById(new Types.ObjectId(bookingId)).lean<BookingDocument | null>();
 }
 
-export async function findBookingByPaystackReference(reference: string): Promise<BookingDocument | null> {
-  return BookingModel.findOne({ paystackReference: reference }).lean<BookingDocument | null>();
-}
-
 export async function updateBookingStatus(
   bookingId: string,
   status: BookingStatus,

@@ -7,6 +7,8 @@ const userSchema = new Schema(
     email: { type: String, required: true, unique: true, lowercase: true },
     passwordHash: { type: String, required: true },
     phoneNumber: { type: String },
+    phoneCountryIso: { type: String },
+    phoneCountryDialCode: { type: String },
     role: { type: String, enum: USER_ROLES, default: 'guest', required: true },
     hostOnboarding: {
       propertyName: { type: String },
@@ -15,7 +17,11 @@ const userSchema = new Schema(
     hostCompliance: {
       businessContact: {
         businessPhoneNumber: { type: String },
+        businessPhoneCountryIso: { type: String },
+        businessPhoneCountryDialCode: { type: String },
         trustedWhatsappNumber: { type: String },
+        trustedWhatsappCountryIso: { type: String },
+        trustedWhatsappCountryDialCode: { type: String },
         officeAddress: { type: String },
         officeLga: { type: String },
         officeState: { type: String },
@@ -49,8 +55,12 @@ const userSchema = new Schema(
     },
     guestOnboarding: {
       phoneNumber: { type: String },
+      phoneCountryIso: { type: String },
+      phoneCountryDialCode: { type: String },
       isWhatsappNumber: { type: Boolean, default: false },
       whatsappNumber: { type: String },
+      whatsappCountryIso: { type: String },
+      whatsappCountryDialCode: { type: String },
       ninNumber: { type: String },
       ninDocumentUrl: { type: String },
       verified: { type: Boolean, default: false },

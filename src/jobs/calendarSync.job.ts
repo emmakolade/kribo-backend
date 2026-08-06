@@ -3,6 +3,7 @@ import { redis } from '../config/redis';
 import { CALENDAR_SYNC_QUEUE_NAME } from '../config/constants';
 import { UserModel } from '../models/user.model';
 import { whatsappService } from '../services/whatsapp.service';
+import { getHostTrustedWhatsappNumber } from '../utils/hostContact';
 
 export const calendarSyncQueue = new Queue(CALENDAR_SYNC_QUEUE_NAME, {
   connection: redis,
@@ -25,11 +26,17 @@ export function startCalendarSyncWorker(): Worker {
     CALENDAR_SYNC_QUEUE_NAME,
     async () => {
       const hosts = await UserModel.find({ role: 'host' }).lean();
-      const hostsWithPhone = hosts.filter((host): host is typeof host & { phoneNumber: string } => typeof host.phoneNumber === 'string' && host.phoneNumber.length > 0);
+      const hostsWithPhone = hosts
+        .map((host) => ({
+          host,
+          trustedHostPhone: getHostTrustedWhatsappNumber(host),
+        }))
+        .filter((entry): entry is { host: typeof hosts[number]; trustedHostPhone: string } => Boolean(entry.trustedHostPhone));
+
       await Promise.all(
-        hostsWithPhone.map((host) =>
+        hostsWithPhone.map(({ trustedHostPhone }) =>
           whatsappService.sendGuestUpdate({
-            guestPhone: host.phoneNumber,
+            guestPhone: trustedHostPhone,
             text: 'Do you have offline bookings this weekend? Reply YES to auto-block dates.',
           }),
         ),

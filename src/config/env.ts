@@ -19,6 +19,7 @@ const envSchema = z.object({
   TWILIO_AUTH_TOKEN: z.string().min(1),
   TWILIO_WHATSAPP_FROM: z.string().min(1),
   TWILIO_WEBHOOK_URL: z.url(),
+  TWILIO_CHECKIN_REMINDER_CONTENT_SID: z.string().min(1).optional(),
   SMTP_HOST: z.string().default('smtp.gmail.com'),
   SMTP_PORT: z.coerce.number().int().positive().default(465),
   SMTP_SECURE: z.coerce.boolean().default(true),

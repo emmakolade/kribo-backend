@@ -31,6 +31,7 @@ import {
 import { emailService } from './email.service';
 import type { EmailSendResult } from './email.service';
 import { paystackService } from './paystack.service';
+import { normalizePhoneToE164 } from '../utils/phone';
 import type {
   ForgotPasswordRequestDto,
   ForgotPasswordResetDto,
@@ -215,9 +216,27 @@ export async function verifyEmailOtp(input: VerifyEmailOtpInput): Promise<{ ok: 
 }
 
 export async function completeHostBusinessContact(userId: string, input: HostBusinessContactOnboardingDto): Promise<void> {
+  const normalizedBusinessPhone = normalizePhoneToE164({
+    rawPhone: input.businessPhoneNumber,
+    countryIso: input.businessPhoneCountryIso,
+    errorCode: 'INVALID_BUSINESS_PHONE_NUMBER',
+    errorMessage: 'Enter a valid business phone number',
+  });
+
+  const normalizedTrustedWhatsapp = normalizePhoneToE164({
+    rawPhone: input.trustedWhatsappNumber,
+    countryIso: input.trustedWhatsappCountryIso,
+    errorCode: 'INVALID_TRUSTED_WHATSAPP_NUMBER',
+    errorMessage: 'Enter a valid trusted WhatsApp number',
+  });
+
   const updated = await updateUserById(userId, {
-    'hostCompliance.businessContact.businessPhoneNumber': input.businessPhoneNumber,
-    'hostCompliance.businessContact.trustedWhatsappNumber': input.trustedWhatsappNumber,
+    'hostCompliance.businessContact.businessPhoneNumber': normalizedBusinessPhone.e164,
+    'hostCompliance.businessContact.businessPhoneCountryIso': normalizedBusinessPhone.countryIso,
+    'hostCompliance.businessContact.businessPhoneCountryDialCode': normalizedBusinessPhone.countryDialCode,
+    'hostCompliance.businessContact.trustedWhatsappNumber': normalizedTrustedWhatsapp.e164,
+    'hostCompliance.businessContact.trustedWhatsappCountryIso': normalizedTrustedWhatsapp.countryIso,
+    'hostCompliance.businessContact.trustedWhatsappCountryDialCode': normalizedTrustedWhatsapp.countryDialCode,
     'hostCompliance.businessContact.officeAddress': input.officeAddress,
     'hostCompliance.businessContact.officeLga': input.officeLga,
     'hostCompliance.businessContact.officeState': input.officeState,
@@ -289,7 +308,11 @@ export async function getAuthMe(userId: string): Promise<AuthMeResponseDto> {
 
   const hostDetails = {
     businessPhoneNumber: user.hostCompliance?.businessContact?.businessPhoneNumber ?? '',
+    businessPhoneCountryIso: user.hostCompliance?.businessContact?.businessPhoneCountryIso ?? 'NG',
+    businessPhoneCountryDialCode: user.hostCompliance?.businessContact?.businessPhoneCountryDialCode ?? '+234',
     trustedWhatsappNumber: user.hostCompliance?.businessContact?.trustedWhatsappNumber ?? '',
+    trustedWhatsappCountryIso: user.hostCompliance?.businessContact?.trustedWhatsappCountryIso ?? 'NG',
+    trustedWhatsappCountryDialCode: user.hostCompliance?.businessContact?.trustedWhatsappCountryDialCode ?? '+234',
     officeAddress: user.hostCompliance?.businessContact?.officeAddress ?? '',
     officeLga: user.hostCompliance?.businessContact?.officeLga ?? '',
     officeState: user.hostCompliance?.businessContact?.officeState ?? '',
@@ -317,8 +340,12 @@ export async function getAuthMe(userId: string): Promise<AuthMeResponseDto> {
 
   const guestDetails = {
     phoneNumber: user.guestOnboarding?.phoneNumber ?? '',
+    phoneCountryIso: user.guestOnboarding?.phoneCountryIso ?? 'NG',
+    phoneCountryDialCode: user.guestOnboarding?.phoneCountryDialCode ?? '+234',
     isWhatsappNumber: user.guestOnboarding?.isWhatsappNumber === true,
     whatsappNumber: user.guestOnboarding?.whatsappNumber ?? '',
+    whatsappCountryIso: user.guestOnboarding?.whatsappCountryIso ?? 'NG',
+    whatsappCountryDialCode: user.guestOnboarding?.whatsappCountryDialCode ?? '+234',
     ninNumber: user.guestOnboarding?.ninNumber ?? '',
   };
 
@@ -338,6 +365,8 @@ export async function getAuthMe(userId: string): Promise<AuthMeResponseDto> {
       lastName,
       email: user.email,
       phoneNumber: user.phoneNumber ?? '',
+      phoneCountryIso: user.phoneCountryIso ?? 'NG',
+      phoneCountryDialCode: user.phoneCountryDialCode ?? '+234',
     },
     hostOnboarding: {
       propertyName: user.hostOnboarding?.propertyName ?? '',
@@ -403,13 +432,33 @@ export async function completeGuestProfile(userId: string, input: GuestProfileOn
     throw new AppError('whatsappNumber is required when isWhatsappNumber is false', 400, 'WHATSAPP_NUMBER_REQUIRED');
   }
 
-  const resolvedWhatsappNumber = input.isWhatsappNumber ? input.phoneNumber : input.whatsappNumber;
+  const normalizedPhoneNumber = normalizePhoneToE164({
+    rawPhone: input.phoneNumber,
+    countryIso: input.phoneCountryIso,
+    errorCode: 'INVALID_PHONE_NUMBER',
+    errorMessage: 'Enter a valid phone number',
+  });
+
+  const normalizedWhatsappNumber = input.isWhatsappNumber
+    ? normalizedPhoneNumber
+    : normalizePhoneToE164({
+      rawPhone: input.whatsappNumber ?? '',
+      countryIso: input.whatsappCountryIso ?? input.phoneCountryIso,
+      errorCode: 'INVALID_WHATSAPP_NUMBER',
+      errorMessage: 'Enter a valid WhatsApp number',
+    });
 
   const updated = await updateUserById(userId, {
-    phoneNumber: input.phoneNumber,
-    'guestOnboarding.phoneNumber': input.phoneNumber,
+    phoneNumber: normalizedPhoneNumber.e164,
+    phoneCountryIso: normalizedPhoneNumber.countryIso,
+    phoneCountryDialCode: normalizedPhoneNumber.countryDialCode,
+    'guestOnboarding.phoneNumber': normalizedPhoneNumber.e164,
+    'guestOnboarding.phoneCountryIso': normalizedPhoneNumber.countryIso,
+    'guestOnboarding.phoneCountryDialCode': normalizedPhoneNumber.countryDialCode,
     'guestOnboarding.isWhatsappNumber': input.isWhatsappNumber,
-    'guestOnboarding.whatsappNumber': resolvedWhatsappNumber,
+    'guestOnboarding.whatsappNumber': normalizedWhatsappNumber.e164,
+    'guestOnboarding.whatsappCountryIso': normalizedWhatsappNumber.countryIso,
+    'guestOnboarding.whatsappCountryDialCode': normalizedWhatsappNumber.countryDialCode,
     'guestOnboarding.ninNumber': input.ninNumber,
     'guestOnboarding.ninDocumentUrl': input.ninDocumentUrl,
     'guestOnboarding.verified': false,
@@ -436,14 +485,27 @@ export async function getProfile(userId: string): Promise<ProfileResponseDto> {
     lastName,
     email: user.email,
     phoneNumber: user.phoneNumber ?? '',
+    phoneCountryIso: user.phoneCountryIso ?? 'NG',
+    phoneCountryDialCode: user.phoneCountryDialCode ?? '+234',
   };
 }
 
 export async function updateProfile(userId: string, input: UpdateProfileDto): Promise<ProfileResponseDto> {
   const fullName = `${input.firstName.trim()} ${input.lastName.trim()}`.trim();
+  const normalizedPhone = input.phoneNumber?.trim()
+    ? normalizePhoneToE164({
+      rawPhone: input.phoneNumber,
+      countryIso: input.phoneCountryIso ?? 'NG',
+      errorCode: 'INVALID_PHONE_NUMBER',
+      errorMessage: 'Enter a valid phone number',
+    })
+    : null;
+
   const updated = await updateUserById(userId, {
     name: fullName,
-    phoneNumber: input.phoneNumber?.trim() ?? '',
+    phoneNumber: normalizedPhone?.e164 ?? '',
+    phoneCountryIso: normalizedPhone?.countryIso ?? 'NG',
+    phoneCountryDialCode: normalizedPhone?.countryDialCode ?? '+234',
   });
 
   if (!updated) {
@@ -459,6 +521,8 @@ export async function updateProfile(userId: string, input: UpdateProfileDto): Pr
     lastName,
     email: updated.email,
     phoneNumber: updated.phoneNumber ?? '',
+    phoneCountryIso: updated.phoneCountryIso ?? 'NG',
+    phoneCountryDialCode: updated.phoneCountryDialCode ?? '+234',
   };
 }
 

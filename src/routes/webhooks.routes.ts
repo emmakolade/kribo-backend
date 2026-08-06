@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { paystackWebhookController, whatsappWebhookController } from '../controllers/bookings.controller';
+import { whatsappWebhookController } from '../controllers/bookings.controller';
+import { paystackWebhookController } from '../controllers/payments.controller';
 import { validate } from '../middleware/validate.middleware';
 
 const webhookSchema = z.object({
@@ -9,6 +10,8 @@ const webhookSchema = z.object({
       Body: z.string().optional(),
       MessageSid: z.string().optional(),
       From: z.string().optional(),
+      ButtonText: z.string().optional(),
+      ButtonPayload: z.string().optional(),
     })
     .passthrough(),
   query: z.object({}).optional(),

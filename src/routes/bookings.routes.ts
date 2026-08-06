@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import {
-  confirmBookingPaymentController,
   createBookingController,
   getBookingDetailsController,
   getBookingStatsController,
@@ -25,7 +24,6 @@ const createBookingSchema = z.object({
     lastName: z.string().optional(),
     email: z.string().email().optional(),
     phone: z.string().optional(),
-    paymentMethod: z.enum(['card', 'bank_transfer', 'transfer']).optional(),
   }).refine((body) => Boolean(body.unitId || body.propertyId), {
     message: 'Either unitId or propertyId is required',
   }),
@@ -62,7 +60,6 @@ export const bookingsRouter = Router();
  *     summary: Create booking and initialize checkout
  */
 bookingsRouter.post('/', requireAuth, requireRole(['guest']), validate(createBookingSchema), createBookingController);
-bookingsRouter.post('/:id/confirm-payment', requireAuth, requireRole(['guest', 'admin']), validate(idParamSchema), confirmBookingPaymentController);
 bookingsRouter.get('/', requireAuth, validate(emptySchema), listBookingsController);
 bookingsRouter.get('/stats', requireAuth, requireRole(['host', 'admin']), validate(emptySchema), getBookingStatsController);
 bookingsRouter.get('/:id', requireAuth, validate(idParamSchema), getBookingDetailsController);

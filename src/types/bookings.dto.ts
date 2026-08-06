@@ -1,12 +1,21 @@
 export interface CreateBookingBodyDto {
-  unitId: string;
+  unitId?: string;
+  propertyId?: string;
   checkIn: string;
   checkOut: string;
-  paymentMethod?: 'card' | 'bank_transfer' | 'transfer';
+  guestCount?: number;
+  roomType?: string;
+  nightlyRate?: number;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  phone?: string;
 }
 
 export interface WhatsappWebhookBodyDto {
   Body?: string;
   MessageSid?: string;
   From?: string;
+  ButtonText?: string;
+  ButtonPayload?: string;
 }

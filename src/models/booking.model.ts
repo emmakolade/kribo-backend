@@ -26,8 +26,6 @@ const bookingSchema = new Schema(
       default: BookingStatus.PENDING,
       index: true,
     },
-    paystackReference: { type: String, required: true, unique: true },
-    paymentMethod: { type: String, enum: ['card', 'bank_transfer', 'transfer'], default: 'bank_transfer' },
     stateHistory: { type: [stateHistorySchema], default: [] },
     lastWebhookId: { type: String },
     checkInMarkedAt: { type: Date },
