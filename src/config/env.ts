@@ -3,6 +3,13 @@ import { z } from 'zod';
 
 dotenvConfig();
 
+function parseEmailList(value: string): string[] {
+  return value
+    .split(',')
+    .map((email) => email.trim().toLowerCase())
+    .filter((email) => email.length > 0);
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(4000),
@@ -32,6 +39,14 @@ const envSchema = z.object({
   CLOUDINARY_API_KEY: z.string().optional(),
   CLOUDINARY_API_SECRET: z.string().optional(),
   EMAIL_OTP_SECRET: z.string().min(12).optional(),
+  ADMIN_PAYOUT_NOTIFICATION_EMAILS: z
+    .string()
+    .default('')
+    .transform((value) => parseEmailList(value))
+    .refine(
+      (emails) => emails.every((email) => z.string().email().safeParse(email).success),
+      'ADMIN_PAYOUT_NOTIFICATION_EMAILS must contain valid comma-separated email addresses',
+    ),
   COMMISSION_RATE: z.coerce.number().min(0).max(1).default(0.12),
   PAYOUT_HOLD_DAYS: z.coerce.number().int().min(0).default(1),
   BOOKING_SERVICE_FEE_NGN: z.coerce.number().int().min(0).default(2000),

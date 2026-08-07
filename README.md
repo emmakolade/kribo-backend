@@ -63,6 +63,7 @@ Required (validated at startup in `src/config/env.ts`):
 - `CLOUDINARY_API_KEY` (required for photo uploads)
 - `CLOUDINARY_API_SECRET` (required for photo uploads)
 - `EMAIL_OTP_SECRET` (optional, falls back to `JWT_SECRET`)
+- `ADMIN_PAYOUT_NOTIFICATION_EMAILS` (comma-separated emails notified when payout needs manual transfer)
 - `COMMISSION_RATE`
 - `PAYOUT_HOLD_DAYS`
 
@@ -108,7 +109,7 @@ Post-signup onboarding:
 6. Check-in reminder worker sends same-day host WhatsApp and email reminders, including WhatsApp check-in command format.
 7. `POST /webhooks/whatsapp` verifies signature and processes `CHECK-IN <BOOKING_ID>` replies from hosts.
 8. Daily host availability reminder encourages hosts to turn property booking availability ON/OFF based on real readiness.
-9. Daily payout job transfers host payout after hold period; unique index on `Payout.bookingId` prevents double payment.
+9. Daily payout job raises manual payout notification emails after hold period; unique index on `Payout.bookingId` prevents duplicate payout requests.
 
 ## Paystack Dashboard Setup
 

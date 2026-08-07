@@ -1,36 +1,17 @@
 import { Types } from 'mongoose';
 import { BookingModel } from '../models/booking.model';
 import {
-  completePayoutByBookingId,
   failPayoutByBookingId,
   findPayoutByBookingId,
   listPendingPayoutsByHost,
   listPayoutsByHost,
 } from '../repositories/payouts.repository';
 import { findUserById } from '../repositories/users.repository';
+import { env } from '../config/env';
 import { BookingStatus } from '../types/booking';
 import { AppError } from '../utils/AppError';
 import { logger } from '../utils/logger';
-import { paystackService } from './paystack.service';
-
-async function markBookingPaidOut(bookingId: string): Promise<void> {
-  const booking = await BookingModel.findById(bookingId).lean();
-  if (!booking || booking.status === BookingStatus.PAID_OUT) {
-    return;
-  }
-
-  if (booking.status === BookingStatus.CHECKED_IN) {
-    await BookingModel.findByIdAndUpdate(bookingId, {
-      status: BookingStatus.COMPLETED,
-      $push: { stateHistory: { status: BookingStatus.COMPLETED, timestamp: new Date() } },
-    });
-  }
-
-  await BookingModel.findByIdAndUpdate(bookingId, {
-    status: BookingStatus.PAID_OUT,
-    $push: { stateHistory: { status: BookingStatus.PAID_OUT, timestamp: new Date() } },
-  });
-}
+import { emailService } from './email.service';
 
 export async function processHostPayoutRequest(bookingId: string): Promise<void> {
   const booking = await BookingModel.findById(bookingId).lean();
@@ -52,7 +33,7 @@ export async function processHostPayoutRequest(bookingId: string): Promise<void>
   }
 
   if (payout.status === 'completed') {
-    await markBookingPaidOut(bookingId);
+    // Admin has already processed this payout manually.
     return;
   }
 
@@ -66,15 +47,34 @@ export async function processHostPayoutRequest(bookingId: string): Promise<void>
     throw new AppError('Host bank payout details are missing', 409, 'HOST_PAYOUT_ACCOUNT_MISSING');
   }
 
-  const transfer = await paystackService.transferToHost({
+  if (env.ADMIN_PAYOUT_NOTIFICATION_EMAILS.length === 0) {
+    throw new AppError(
+      'Admin payout notification emails are not configured',
+      500,
+      'ADMIN_PAYOUT_NOTIFICATION_EMAILS_NOT_CONFIGURED',
+    );
+  }
+
+  // Automatic Paystack transfer is disabled. Admin now initiates payout manually.
+  // const transfer = await paystackService.transferToHost({
+  //   amount: booking.payoutAmount,
+  //   recipientCode: host.bankDetails.recipientCode,
+  //   reason: `Payout for booking ${String(booking._id)}`,
+  // });
+  // await completePayoutByBookingId(bookingId, transfer.transferReference);
+  // await markBookingPaidOut(bookingId);
+
+  await emailService.sendAdminManualPayoutRequestEmail({
+    to: env.ADMIN_PAYOUT_NOTIFICATION_EMAILS,
+    bookingId: String(booking._id),
+    hostName: host.name,
+    hostEmail: host.email,
     amount: booking.payoutAmount,
     recipientCode: host.bankDetails.recipientCode,
-    reason: `Payout for booking ${String(booking._id)}`,
+    transferReference: payout.transferReference,
   });
 
-  await completePayoutByBookingId(bookingId, transfer.transferReference);
-  await markBookingPaidOut(bookingId);
-  logger.info({ bookingId }, 'host payout transfer completed and booking marked paid out');
+  logger.info({ bookingId }, 'manual payout email sent to admins');
 }
 
 export async function getHostEarnings(hostId: string): Promise<{

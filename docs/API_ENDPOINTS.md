@@ -1078,26 +1078,20 @@ Alternative property-first body:
 - Auth: required, role `host | admin`
 - Behavior:
   - creates or reuses a pending payout request;
-  - attempts Paystack transfer immediately in the same request;
-  - booking is marked `paid_out` immediately when transfer succeeds.
+  - sends notification email to configured admin recipients for manual transfer;
+  - does not auto-transfer through Paystack in this request;
+  - booking stays in current status until payout is manually completed.
 - Response 200:
 
 ```json
 {
   "bookingId": "688...",
-  "status": "paid_out",
+  "status": "payout_requested",
   "paidOutAmount": 42000
 }
 ```
 
-- `status` returns `paid_out` on successful immediate transfer.
-
-```json
-{
-  "bookingId": "688...",
-  "status": "paid_out"
-}
-```
+- `status` returns `payout_requested` after request submission and remains so until admin manually marks the booking `paid_out`.
 
 ---
 

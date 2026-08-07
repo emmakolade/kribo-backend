@@ -35,6 +35,16 @@ interface SendHostAvailabilityReminderEmailInput {
   }>;
 }
 
+interface SendAdminManualPayoutRequestEmailInput {
+  to: string[];
+  bookingId: string;
+  hostName: string;
+  hostEmail: string;
+  amount: number;
+  recipientCode: string;
+  transferReference: string;
+}
+
 export interface EmailSendResult {
   provider: 'gmail_smtp' | 'aws_ses';
   messageId: string | null;
@@ -48,6 +58,7 @@ interface EmailService {
   sendHostConfirmedBookingEmail(input: SendHostConfirmedBookingEmailInput): Promise<EmailSendResult>;
   sendHostCheckInReminderEmail(input: SendHostCheckInReminderEmailInput): Promise<EmailSendResult>;
   sendHostAvailabilityReminderEmail(input: SendHostAvailabilityReminderEmailInput): Promise<EmailSendResult>;
+  sendAdminManualPayoutRequestEmail(input: SendAdminManualPayoutRequestEmailInput): Promise<EmailSendResult>;
 }
 
 function buildHostLoginRedirectUrl(redirectPath: string): string {
@@ -230,6 +241,46 @@ class EnvironmentEmailService implements EmailService {
         '<p><strong>Current status:</strong></p>',
         `<ul>${input.properties.map((property) => `<li>${property.propertyName}: <strong>${property.bookingEnabled ? 'ON' : 'OFF'}</strong></li>`).join('')}</ul>`,
         `<p><a href="${manageAvailabilityLink}">Login and manage property availability</a></p>`,
+      ].join(''),
+    });
+
+    return {
+      provider,
+      messageId: info.messageId ?? null,
+      accepted: (info.accepted ?? []).map((value) => String(value)),
+      rejected: (info.rejected ?? []).map((value) => String(value)),
+      response: info.response ?? null,
+    };
+  }
+
+  public async sendAdminManualPayoutRequestEmail(input: SendAdminManualPayoutRequestEmailInput): Promise<EmailSendResult> {
+    const provider = env.NODE_ENV === 'production' ? 'aws_ses' : 'gmail_smtp';
+    const transporter = this.getTransporter();
+    const fromEmail = env.NODE_ENV === 'production' ? env.AWS_SES_FROM_EMAIL : env.SMTP_FROM_EMAIL;
+
+    const info = await transporter.sendMail({
+      from: fromEmail,
+      to: input.to,
+      subject: `Manual payout required for booking ${input.bookingId}`,
+      text: [
+        'A host payout has been requested and requires manual transfer.',
+        `Booking ID: ${input.bookingId}`,
+        `Host Name: ${input.hostName}`,
+        `Host Email: ${input.hostEmail}`,
+        `Amount (NGN): ${input.amount}`,
+        `Recipient Code: ${input.recipientCode}`,
+        `Transfer Reference: ${input.transferReference}`,
+        'Please complete the transfer manually in Paystack and then mark payout as completed in the system.',
+      ].join('\n'),
+      html: [
+        '<p>A host payout has been requested and requires manual transfer.</p>',
+        `<p><strong>Booking ID:</strong> ${input.bookingId}</p>`,
+        `<p><strong>Host Name:</strong> ${input.hostName}</p>`,
+        `<p><strong>Host Email:</strong> ${input.hostEmail}</p>`,
+        `<p><strong>Amount (NGN):</strong> ${input.amount}</p>`,
+        `<p><strong>Recipient Code:</strong> ${input.recipientCode}</p>`,
+        `<p><strong>Transfer Reference:</strong> ${input.transferReference}</p>`,
+        '<p>Please complete the transfer manually in Paystack and then mark payout as completed in the system.</p>',
       ].join(''),
     });
 

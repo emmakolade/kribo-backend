@@ -24,6 +24,7 @@ type BookingApiStatus =
   | 'declined'
   | 'checked_in'
   | 'completed'
+  | 'payout_requested'
   | 'cancelled'
   | 'paid_out';
 
@@ -569,7 +570,7 @@ export async function withdrawBookingPayoutByHost(input: {
 
   if (existingPayout?.status === 'completed') {
     return {
-      status: 'paid_out',
+      status: 'payout_requested',
       paidOutAmount: existingPayout.amount,
     };
   }
@@ -597,8 +598,13 @@ export async function withdrawBookingPayoutByHost(input: {
 
   await processHostPayoutRequest(input.bookingId);
 
+  const refreshedBooking = await findBookingById(input.bookingId);
+  if (!refreshedBooking) {
+    throw new AppError('Booking not found after payout request', 500, 'BOOKING_UPDATE_FAILED');
+  }
+
   return {
-    status: 'paid_out',
+    status: refreshedBooking.status === BookingStatus.PAID_OUT ? 'paid_out' : 'payout_requested',
     paidOutAmount: booking.payoutAmount,
   };
 }
