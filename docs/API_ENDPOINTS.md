@@ -290,6 +290,7 @@ Host register body uses the same fields with `"role": "host"`.
         "managerHomeAddress": "7 Allen Avenue, Ikeja",
         "accountNumber": "0123456789",
         "bankCode": "999992",
+        "bankName": "OPay Digital Services Limited",
         "accountName": "JOHN DOE",
         "serviceAgreementAccepted": false
       }
@@ -334,13 +335,19 @@ Host register body uses the same fields with `"role": "host"`.
 ```json
 {
   "id": "688...",
-  "role": "guest",
+  "role": "host",
   "firstName": "Jane",
   "lastName": "Doe",
   "email": "jane@example.com",
   "phoneNumber": "+2348012345678",
   "phoneCountryIso": "NG",
-  "phoneCountryDialCode": "+234"
+  "phoneCountryDialCode": "+234",
+  "bankDetails": {
+    "bankName": "Guaranty Trust Bank",
+    "accountNumber": "0123456789",
+    "accountName": "JOHN DOE",
+    "editable": false
+  }
 }
 ```
 
@@ -359,6 +366,8 @@ Host register body uses the same fields with `"role": "host"`.
 ```
 
 - `phoneNumber` is submitted as local/national format alongside `phoneCountryIso` and saved in E.164 format.
+- Host bank details are returned as read-only under `bankDetails` (`editable: false`).
+- Use host onboarding bank account endpoint to set/update payout bank details.
 - Response 200: same as `GET /auth/profile`.
 
 ### POST /auth/change-password
@@ -994,6 +1003,11 @@ Alternative property-first body:
   - guest: own bookings
   - host: bookings for host properties
   - admin: all bookings
+- Each booking item may include:
+  - `payoutAmount`: host payout amount (excludes service fee)
+- Each booking item may include:
+  - `checkedInAt`: ISO timestamp for when host marked check-in
+  - `paidOutAt`: ISO timestamp for when payout was marked paid out
 
 ### GET /bookings/stats
 
@@ -1004,7 +1018,8 @@ Alternative property-first body:
 {
   "totalPendingBookings": 0,
   "totalConfirmedBookings": 0,
-  "totalCheckedInBookings": 0
+  "totalCheckedInBookings": 0,
+  "totalPaidOutBookings": 0
 }
 ```
 
@@ -1061,7 +1076,21 @@ Alternative property-first body:
 ### POST /host/bookings/:id/withdraw
 
 - Auth: required, role `host | admin`
+- Behavior:
+  - creates or reuses a pending payout request;
+  - attempts Paystack transfer immediately in the same request;
+  - booking is marked `paid_out` immediately when transfer succeeds.
 - Response 200:
+
+```json
+{
+  "bookingId": "688...",
+  "status": "paid_out",
+  "paidOutAmount": 42000
+}
+```
+
+- `status` returns `paid_out` on successful immediate transfer.
 
 ```json
 {

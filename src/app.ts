@@ -19,6 +19,9 @@ import { swaggerSpec } from './docs/swagger';
 
 export const app = express();
 
+// API responses are dynamic/authenticated; disable conditional 304 behavior.
+app.set('etag', false);
+
 app.use(
   express.json({
     verify: (req, _res, buf) => {
@@ -28,6 +31,12 @@ app.use(
 );
 app.use(express.urlencoded({ extended: false }));
 app.use(cors());
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/docs')) {
+    res.setHeader('Cache-Control', 'no-store');
+  }
+  next();
+});
 app.use(
   pinoHttp({
     logger,

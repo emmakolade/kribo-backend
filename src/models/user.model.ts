@@ -41,6 +41,7 @@ const userSchema = new Schema(
       bankAccount: {
         accountNumber: { type: String },
         bankCode: { type: String },
+        bankName: { type: String },
         accountName: { type: String },
         verificationStatus: { type: String, default: 'pending_manual_review' },
         completedAt: { type: Date },
@@ -74,6 +75,7 @@ const userSchema = new Schema(
     bankDetails: {
       accountNumber: { type: String },
       bankCode: { type: String },
+      bankName: { type: String },
       accountName: { type: String },
       recipientCode: { type: String },
     },

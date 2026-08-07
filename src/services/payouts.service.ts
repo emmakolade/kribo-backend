@@ -1,68 +1,80 @@
 import { Types } from 'mongoose';
-import { MongoServerError } from 'mongodb';
-import { env } from '../config/env';
 import { BookingModel } from '../models/booking.model';
-import { createPayout, listPendingPayoutsByHost, listPayoutsByHost } from '../repositories/payouts.repository';
+import {
+  completePayoutByBookingId,
+  failPayoutByBookingId,
+  findPayoutByBookingId,
+  listPendingPayoutsByHost,
+  listPayoutsByHost,
+} from '../repositories/payouts.repository';
 import { findUserById } from '../repositories/users.repository';
 import { BookingStatus } from '../types/booking';
 import { AppError } from '../utils/AppError';
 import { logger } from '../utils/logger';
 import { paystackService } from './paystack.service';
 
-export async function runDailyPayoutSweep(): Promise<{ paidOutCount: number }> {
-  const bookings = await BookingModel.find({ status: BookingStatus.COMPLETED }).lean();
-  let paidOutCount = 0;
-
-  for (const booking of bookings) {
-    const checkInMarkedAt = booking.checkInMarkedAt;
-    if (!checkInMarkedAt) {
-      continue;
-    }
-
-    const releaseDate = new Date(checkInMarkedAt);
-    releaseDate.setDate(releaseDate.getDate() + env.PAYOUT_HOLD_DAYS);
-    if (new Date() < releaseDate) {
-      continue;
-    }
-
-    const host = await findUserById(String(booking.hostId));
-    if (!host?.bankDetails?.recipientCode) {
-      continue;
-    }
-
-    try {
-      const transfer = await paystackService.transferToHost({
-        amount: booking.payoutAmount,
-        recipientCode: host.bankDetails.recipientCode,
-        reason: `Payout for booking ${String(booking._id)}`,
-      });
-
-      await createPayout({
-        bookingId: new Types.ObjectId(String(booking._id)),
-        hostId: new Types.ObjectId(String(host._id)),
-        amount: booking.payoutAmount,
-        status: 'completed',
-        transferReference: transfer.transferReference,
-      });
-
-      await BookingModel.findByIdAndUpdate(booking._id, {
-        status: BookingStatus.PAID_OUT,
-        $push: { stateHistory: { status: BookingStatus.PAID_OUT, timestamp: new Date() } },
-      });
-
-      logger.info({ bookingId: String(booking._id) }, 'payout completed');
-      paidOutCount += 1;
-    } catch (error: unknown) {
-      const mongoError = error as MongoServerError;
-      if (mongoError?.code === 11000) {
-        logger.info({ bookingId: String(booking._id) }, 'duplicate payout prevented by unique index');
-        continue;
-      }
-      throw error;
-    }
+async function markBookingPaidOut(bookingId: string): Promise<void> {
+  const booking = await BookingModel.findById(bookingId).lean();
+  if (!booking || booking.status === BookingStatus.PAID_OUT) {
+    return;
   }
 
-  return { paidOutCount };
+  if (booking.status === BookingStatus.CHECKED_IN) {
+    await BookingModel.findByIdAndUpdate(bookingId, {
+      status: BookingStatus.COMPLETED,
+      $push: { stateHistory: { status: BookingStatus.COMPLETED, timestamp: new Date() } },
+    });
+  }
+
+  await BookingModel.findByIdAndUpdate(bookingId, {
+    status: BookingStatus.PAID_OUT,
+    $push: { stateHistory: { status: BookingStatus.PAID_OUT, timestamp: new Date() } },
+  });
+}
+
+export async function processHostPayoutRequest(bookingId: string): Promise<void> {
+  const booking = await BookingModel.findById(bookingId).lean();
+  if (!booking) {
+    throw new AppError('Booking not found', 404, 'BOOKING_NOT_FOUND');
+  }
+
+  if (booking.status === BookingStatus.PAID_OUT) {
+    return;
+  }
+
+  if (booking.status !== BookingStatus.CHECKED_IN && booking.status !== BookingStatus.COMPLETED) {
+    throw new AppError('Booking is not ready for payout transfer', 409, 'BOOKING_NOT_READY_FOR_PAYOUT');
+  }
+
+  const payout = await findPayoutByBookingId(bookingId);
+  if (!payout) {
+    throw new AppError('Payout record not found for booking', 404, 'PAYOUT_NOT_FOUND');
+  }
+
+  if (payout.status === 'completed') {
+    await markBookingPaidOut(bookingId);
+    return;
+  }
+
+  if (payout.status === 'failed') {
+    throw new AppError('Payout record is marked as failed', 409, 'PAYOUT_ALREADY_FAILED');
+  }
+
+  const host = await findUserById(String(booking.hostId));
+  if (!host?.bankDetails?.recipientCode) {
+    await failPayoutByBookingId(bookingId, `host_missing_recipient_${Date.now()}`);
+    throw new AppError('Host bank payout details are missing', 409, 'HOST_PAYOUT_ACCOUNT_MISSING');
+  }
+
+  const transfer = await paystackService.transferToHost({
+    amount: booking.payoutAmount,
+    recipientCode: host.bankDetails.recipientCode,
+    reason: `Payout for booking ${String(booking._id)}`,
+  });
+
+  await completePayoutByBookingId(bookingId, transfer.transferReference);
+  await markBookingPaidOut(bookingId);
+  logger.info({ bookingId }, 'host payout transfer completed and booking marked paid out');
 }
 
 export async function getHostEarnings(hostId: string): Promise<{

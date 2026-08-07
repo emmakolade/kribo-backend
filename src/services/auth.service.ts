@@ -88,6 +88,17 @@ function splitName(fullName: string | undefined): { firstName: string; lastName:
   return { firstName, lastName };
 }
 
+async function resolveBankNameByCode(bankCode: string): Promise<string> {
+  const normalizedCode = bankCode.trim();
+  if (!normalizedCode) {
+    return '';
+  }
+
+  const banks = await paystackService.listBanks();
+  const match = banks.find((bank) => bank.code === normalizedCode);
+  return match?.name ?? '';
+}
+
 async function requireRegisterOtpVerification(email: string): Promise<string> {
   const verifiedOtp = await getLatestVerifiedEmailOtp(email, 'register');
   if (!verifiedOtp) {
@@ -267,14 +278,24 @@ export async function completeHostManager(userId: string, input: HostManagerOnbo
 }
 
 export async function completeHostBankAccount(userId: string, input: HostBankAccountOnboardingDto): Promise<void> {
+  const bankName = await resolveBankNameByCode(input.bankCode);
+  const { recipientCode } = await paystackService.createTransferRecipient({
+    accountNumber: input.accountNumber,
+    bankCode: input.bankCode,
+    accountName: input.accountName,
+  });
+
   const updated = await updateUserById(userId, {
     bankDetails: {
       accountNumber: input.accountNumber,
       bankCode: input.bankCode,
+      bankName,
       accountName: input.accountName,
+      recipientCode,
     },
     'hostCompliance.bankAccount.accountNumber': input.accountNumber,
     'hostCompliance.bankAccount.bankCode': input.bankCode,
+    'hostCompliance.bankAccount.bankName': bankName,
     'hostCompliance.bankAccount.accountName': input.accountName,
     'hostCompliance.bankAccount.verificationStatus': 'pending_manual_review',
     'hostCompliance.bankAccount.completedAt': new Date(),
@@ -326,6 +347,7 @@ export async function getAuthMe(userId: string): Promise<AuthMeResponseDto> {
     managerHomeAddress: user.hostCompliance?.manager?.managerHomeAddress ?? '',
     accountNumber: user.hostCompliance?.bankAccount?.accountNumber ?? '',
     bankCode: user.hostCompliance?.bankAccount?.bankCode ?? '',
+    bankName: user.hostCompliance?.bankAccount?.bankName ?? user.bankDetails?.bankName ?? '',
     accountName: user.hostCompliance?.bankAccount?.accountName ?? '',
     serviceAgreementAccepted: user.hostCompliance?.serviceAgreement?.accepted === true,
   };
@@ -487,6 +509,14 @@ export async function getProfile(userId: string): Promise<ProfileResponseDto> {
     phoneNumber: user.phoneNumber ?? '',
     phoneCountryIso: user.phoneCountryIso ?? 'NG',
     phoneCountryDialCode: user.phoneCountryDialCode ?? '+234',
+    bankDetails: user.role === 'host'
+      ? {
+        bankName: user.hostCompliance?.bankAccount?.bankName ?? user.bankDetails?.bankName ?? '',
+        accountNumber: user.hostCompliance?.bankAccount?.accountNumber ?? user.bankDetails?.accountNumber ?? '',
+        accountName: user.hostCompliance?.bankAccount?.accountName ?? user.bankDetails?.accountName ?? '',
+        editable: false,
+      }
+      : null,
   };
 }
 
@@ -523,6 +553,14 @@ export async function updateProfile(userId: string, input: UpdateProfileDto): Pr
     phoneNumber: updated.phoneNumber ?? '',
     phoneCountryIso: updated.phoneCountryIso ?? 'NG',
     phoneCountryDialCode: updated.phoneCountryDialCode ?? '+234',
+    bankDetails: updated.role === 'host'
+      ? {
+        bankName: updated.hostCompliance?.bankAccount?.bankName ?? updated.bankDetails?.bankName ?? '',
+        accountNumber: updated.hostCompliance?.bankAccount?.accountNumber ?? updated.bankDetails?.accountNumber ?? '',
+        accountName: updated.hostCompliance?.bankAccount?.accountName ?? updated.bankDetails?.accountName ?? '',
+        editable: false,
+      }
+      : null,
   };
 }
 

@@ -7,7 +7,6 @@ This document explains all non-HTTP backend processes currently running when the
 Started in bootstrap flow:
 
 - `startBookingEventConsumer()`
-- `schedulePayoutSweep()`
 - `scheduleEscalationChecks()`
 - `scheduleCalendarSyncPrompt()`
 - `scheduleCheckInReminderJob()`
@@ -50,32 +49,28 @@ See implementation in:
 
 ---
 
-## 2) BullMQ Recurring Job: Payout Sweep
+## 2) BullMQ Payout Worker
 
 ### Component
 
 - File: `src/jobs/payoutSweep.job.ts`
 - Queue name: `payout.sweep`
-- Schedule: cron `0 1 * * *` (daily at 01:00)
 
 ### Worker action
 
-- Calls `runDailyPayoutSweep()` from `src/services/payouts.service.ts`.
+- Processes `host_payout_request` jobs by calling `processHostPayoutRequest()` from `src/services/payouts.service.ts`.
 
 ### What it does
 
-1. Finds bookings in `completed` state.
-2. Checks hold period using `PAYOUT_HOLD_DAYS`.
+1. Receives payout jobs for specific bookings.
+2. Validates booking status and host payout recipient setup.
 3. Transfers host payout using Paystack service.
-4. Creates `Payout` record.
-5. Transitions booking to `paid_out`.
-6. Handles duplicate payout idempotently:
-   - Duplicate key on `Payout.bookingId` (unique index) is treated as no-op.
+4. Marks payout and booking as `paid_out` on success.
 
 ### Why it matters
 
-- Automates escrow release.
-- Prevents double payout via data-layer uniqueness.
+- Processes payout requests with queue-backed retries.
+- Prevents duplicate payout side effects via payout status checks.
 
 ---
 

@@ -85,6 +85,7 @@ export interface HostOnboardingStatusDto {
     managerHomeAddress: string;
     accountNumber: string;
     bankCode: string;
+    bankName: string;
     accountName: string;
     serviceAgreementAccepted: boolean;
   } | null;
@@ -188,6 +189,12 @@ export interface ProfileResponseDto {
   phoneNumber: string;
   phoneCountryIso: string;
   phoneCountryDialCode: string;
+  bankDetails: {
+    bankName: string;
+    accountNumber: string;
+    accountName: string;
+    editable: false;
+  } | null;
 }
 
 export interface VerifyHostBodyDto {

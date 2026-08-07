@@ -18,6 +18,11 @@ export interface PaystackService {
     recipientCode: string;
     reason: string;
   }): Promise<{ transferReference: string }>;
+  createTransferRecipient(input: {
+    accountNumber: string;
+    bankCode: string;
+    accountName: string;
+  }): Promise<{ recipientCode: string }>;
   resolveAccountName(input: {
     accountNumber: string;
     bankCode: string;
@@ -102,6 +107,30 @@ class LivePaystackService implements PaystackService {
     });
 
     return { transferReference: data.data.reference as string };
+  }
+
+  public async createTransferRecipient(input: {
+    accountNumber: string;
+    bankCode: string;
+    accountName: string;
+  }): Promise<{ recipientCode: string }> {
+    try {
+      const { data } = await this.client.post('/transferrecipient', {
+        type: 'nuban',
+        name: input.accountName,
+        account_number: input.accountNumber,
+        bank_code: input.bankCode,
+        currency: 'NGN',
+      });
+
+      return { recipientCode: String(data.data.recipient_code) };
+    } catch (error) {
+      this.throwPaystackError(
+        error,
+        'Unable to register bank payout beneficiary',
+        'PAYSTACK_TRANSFER_RECIPIENT_CREATE_FAILED',
+      );
+    }
   }
 
   public async resolveAccountName(input: {

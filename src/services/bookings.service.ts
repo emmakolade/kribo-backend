@@ -1,10 +1,13 @@
 import { Types } from 'mongoose';
+import { MongoServerError } from 'mongodb';
 import { env } from '../config/env';
 import { BookingModel } from '../models/booking.model';
+import { PayoutModel } from '../models/payout.model';
 import { PropertyModel } from '../models/property.model';
 import { UnitModel } from '../models/unit.model';
 import { UserModel } from '../models/user.model';
 import { createBooking, findBookingById, setBookingWebhookProcessed, updateBookingStatus } from '../repositories/bookings.repository';
+import { createPayout, findPayoutByBookingId, setPayoutPendingByBookingId } from '../repositories/payouts.repository';
 import { findUserById } from '../repositories/users.repository';
 import { BookingStatus, canTransition } from '../types/booking';
 import { AppError } from '../utils/AppError';
@@ -12,6 +15,7 @@ import { dateRange } from '../utils/dates';
 import { logger } from '../utils/logger';
 import { calculateCommission, calculatePayout } from './commission.service';
 import { refundBookingPayment } from './payments.service';
+import { processHostPayoutRequest } from './payouts.service';
 
 type BookingApiStatus =
   | 'pending'
@@ -28,6 +32,10 @@ interface BookingApiView {
   propertyId: string;
   roomType?: string;
   status: BookingApiStatus;
+  payoutAmount: number;
+  payoutTransferStatus?: 'pending' | 'completed' | 'failed';
+  checkedInAt?: string;
+  paidOutAt?: string;
   guestCount: number;
   checkIn: string;
   checkOut: string;
@@ -45,6 +53,11 @@ interface BookingApiView {
     cleaningFee: number;
     total: number;
   };
+}
+
+interface BookingStateHistoryItem {
+  status: BookingStatus;
+  timestamp: Date | string;
 }
 
 function toBookingApiStatus(status: BookingStatus): BookingApiStatus {
@@ -105,14 +118,17 @@ async function mapToBookingApiView(booking: {
   guestId: Types.ObjectId;
   unitId: Types.ObjectId;
   totalAmount: number;
+  payoutAmount: number;
   checkIn: Date;
   checkOut: Date;
   createdAt: Date;
   status: BookingStatus;
+  stateHistory?: BookingStateHistoryItem[];
 }): Promise<BookingApiView> {
-  const [unit, guest] = await Promise.all([
+  const [unit, guest, payout] = await Promise.all([
     UnitModel.findById(booking.unitId).lean(),
     UserModel.findById(booking.guestId).lean(),
+    PayoutModel.findOne({ bookingId: booking._id }).lean(),
   ]);
 
   const checkIn = new Date(booking.checkIn);
@@ -123,12 +139,21 @@ async function mapToBookingApiView(booking: {
   const nightlyRate = unit?.pricePerNight ?? Math.max(0, Math.round(baseAmount / nights));
   const bookingId = String(booking._id);
   const nameParts = splitNameParts(guest?.name ?? '');
+  const stateHistory = Array.isArray(booking.stateHistory) ? booking.stateHistory : [];
+  const checkedInState = [...stateHistory].reverse().find((entry) => entry.status === BookingStatus.CHECKED_IN);
+  const paidOutState = [...stateHistory].reverse().find((entry) => entry.status === BookingStatus.PAID_OUT);
+  const checkedInAt = checkedInState ? new Date(checkedInState.timestamp).toISOString() : undefined;
+  const paidOutAt = paidOutState ? new Date(paidOutState.timestamp).toISOString() : undefined;
 
   return {
     id: bookingId,
     propertyId: unit ? String(unit.propertyId) : '',
     roomType: unit?.name,
     status: toBookingApiStatus(booking.status),
+    payoutAmount: booking.payoutAmount,
+    payoutTransferStatus: payout?.status,
+    checkedInAt,
+    paidOutAt,
     guestCount: unit?.maxGuests ?? 1,
     checkIn: checkIn.toISOString().slice(0, 10),
     checkOut: checkOut.toISOString().slice(0, 10),
@@ -316,12 +341,12 @@ export async function getBookingApiStatus(bookingId: string): Promise<{
 export async function getBookingStats(input: {
   requesterId: string;
   requesterRole: 'host' | 'admin';
-}): Promise<{ totalPendingBookings: number; totalConfirmedBookings: number; totalCheckedInBookings: number }> {
+}): Promise<{ totalPendingBookings: number; totalConfirmedBookings: number; totalCheckedInBookings: number; totalPaidOutBookings: number }> {
   const baseFilter = input.requesterRole === 'host'
     ? { hostId: new Types.ObjectId(input.requesterId) }
     : {};
 
-  const [totalPendingBookings, totalConfirmedBookings, totalCheckedInBookings] = await Promise.all([
+  const [totalPendingBookings, totalConfirmedBookings, totalCheckedInBookings, totalPaidOutBookings] = await Promise.all([
     BookingModel.countDocuments({
       ...baseFilter,
       status: BookingStatus.PENDING,
@@ -334,12 +359,17 @@ export async function getBookingStats(input: {
       ...baseFilter,
       status: BookingStatus.CHECKED_IN,
     }),
+    BookingModel.countDocuments({
+      ...baseFilter,
+      status: BookingStatus.PAID_OUT,
+    }),
   ]);
 
   return {
     totalPendingBookings,
     totalConfirmedBookings,
     totalCheckedInBookings,
+    totalPaidOutBookings,
   };
 }
 
@@ -508,7 +538,7 @@ export async function withdrawBookingPayoutByHost(input: {
   bookingId: string;
   requesterId: string;
   requesterRole: 'host' | 'admin';
-}): Promise<{ status: BookingApiStatus }> {
+}): Promise<{ status: BookingApiStatus; paidOutAmount: number }> {
   const booking = await findBookingById(input.bookingId);
   if (!booking) {
     throw new AppError('Booking not found', 404, 'BOOKING_NOT_FOUND');
@@ -521,25 +551,56 @@ export async function withdrawBookingPayoutByHost(input: {
   if (booking.status === BookingStatus.PAID_OUT) {
     return {
       status: 'paid_out',
+      paidOutAmount: booking.payoutAmount,
     };
   }
 
-  if (booking.status === BookingStatus.CHECKED_IN) {
-    await transitionBooking(input.bookingId, BookingStatus.COMPLETED);
-    await transitionBooking(input.bookingId, BookingStatus.PAID_OUT);
+  if (booking.status !== BookingStatus.CHECKED_IN && booking.status !== BookingStatus.COMPLETED) {
+    throw new AppError('Booking is not ready for payout withdrawal', 409, 'BOOKING_NOT_READY_FOR_PAYOUT');
+  }
+
+  const host = await findUserById(String(booking.hostId));
+  if (!host?.bankDetails?.recipientCode) {
+    throw new AppError('Host bank payout details are missing', 409, 'HOST_PAYOUT_ACCOUNT_MISSING');
+  }
+
+  const transferReference = `manual_${input.bookingId}_${Date.now()}`;
+  const existingPayout = await findPayoutByBookingId(input.bookingId);
+
+  if (existingPayout?.status === 'completed') {
     return {
       status: 'paid_out',
+      paidOutAmount: existingPayout.amount,
     };
   }
 
-  if (booking.status === BookingStatus.COMPLETED) {
-    await transitionBooking(input.bookingId, BookingStatus.PAID_OUT);
-    return {
-      status: 'paid_out',
-    };
+  try {
+    if (existingPayout?.status === 'failed') {
+      await setPayoutPendingByBookingId(input.bookingId, transferReference);
+    }
+    else {
+      await createPayout({
+        bookingId: booking._id,
+        hostId: booking.hostId,
+        amount: booking.payoutAmount,
+        status: 'pending',
+        transferReference,
+      });
+    }
+  }
+  catch (error: unknown) {
+    const mongoError = error as MongoServerError;
+    if (mongoError?.code !== 11000) {
+      throw error;
+    }
   }
 
-  throw new AppError('Booking is not ready for payout withdrawal', 409, 'BOOKING_NOT_READY_FOR_PAYOUT');
+  await processHostPayoutRequest(input.bookingId);
+
+  return {
+    status: 'paid_out',
+    paidOutAmount: booking.payoutAmount,
+  };
 }
 
 export async function cancelBooking(

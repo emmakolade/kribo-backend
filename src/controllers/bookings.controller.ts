@@ -260,5 +260,6 @@ export async function hostWithdrawController(req: Request, res: Response): Promi
   res.status(200).json({
     bookingId: id,
     status: result.status,
+    paidOutAmount: result.paidOutAmount,
   });
 }
