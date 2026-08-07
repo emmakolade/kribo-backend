@@ -47,6 +47,7 @@ Required (validated at startup in `src/config/env.ts`):
 - `PAYSTACK_BASE_URL`
 - `PAYSTACK_WEBHOOK_URL` (recommended for deployment ops visibility; should point to your backend `/webhooks/paystack` endpoint)
 - `HOST_APP_BASE_URL` (frontend base URL for email login links, e.g. `https://app.kribo.com`)
+- `KRIBO_LOGO_URL` (optional absolute URL used in branded email headers)
 - `TWILIO_ACCOUNT_SID`
 - `TWILIO_AUTH_TOKEN`
 - `TWILIO_WHATSAPP_FROM`
@@ -63,7 +64,7 @@ Required (validated at startup in `src/config/env.ts`):
 - `CLOUDINARY_API_KEY` (required for photo uploads)
 - `CLOUDINARY_API_SECRET` (required for photo uploads)
 - `EMAIL_OTP_SECRET` (optional, falls back to `JWT_SECRET`)
-- `ADMIN_PAYOUT_NOTIFICATION_EMAILS` (comma-separated emails notified when payout needs manual transfer)
+- `ADMIN_EMAILS` (comma-separated emails notified when payout needs manual transfer)
 - `COMMISSION_RATE`
 - `PAYOUT_HOLD_DAYS`
 

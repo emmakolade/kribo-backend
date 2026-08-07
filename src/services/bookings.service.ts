@@ -23,7 +23,6 @@ type BookingApiStatus =
   | 'confirmed'
   | 'declined'
   | 'checked_in'
-  | 'completed'
   | 'payout_requested'
   | 'cancelled'
   | 'paid_out';
@@ -72,6 +71,10 @@ function toBookingApiStatus(status: BookingStatus): BookingApiStatus {
 
   if (status === BookingStatus.DISPUTED) {
     return 'cancelled';
+  }
+
+  if (status === BookingStatus.COMPLETED) {
+    return 'paid_out';
   }
 
   return status;

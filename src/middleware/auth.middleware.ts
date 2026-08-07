@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env';
+import { findUserById } from '../repositories/users.repository';
 import { AppError } from '../utils/AppError';
 import type { UserRole } from '../types/auth';
 
@@ -9,7 +10,7 @@ interface JwtPayload {
   role: UserRole;
 }
 
-export function requireAuth(req: Request, _res: Response, next: NextFunction): void {
+export async function requireAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization;
   if (!header || !header.startsWith('Bearer ')) {
     next(new AppError('Unauthorized', 401, 'UNAUTHORIZED'));
@@ -20,6 +21,17 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction): v
 
   try {
     const payload = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+    const user = await findUserById(payload.sub);
+    if (!user) {
+      next(new AppError('Unauthorized', 401, 'UNAUTHORIZED'));
+      return;
+    }
+
+    if (user.isSuspended) {
+      next(new AppError('Your account is suspended. Please contact support.', 403, 'ACCOUNT_SUSPENDED'));
+      return;
+    }
+
     req.user = {
       userId: payload.sub,
       role: payload.role,

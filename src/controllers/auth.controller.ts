@@ -174,7 +174,7 @@ export async function activateHostBusinessController(req: Request, res: Response
   }
 
   await activateHostBusiness(req.user!.userId);
-  res.status(200).json({ ok: true, status: 'business_activated' });
+  res.status(200).json({ ok: true, status: 'submitted_for_review' });
 }
 
 export async function completeGuestProfileController(req: Request, res: Response): Promise<void> {

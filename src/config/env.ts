@@ -22,6 +22,7 @@ const envSchema = z.object({
   PAYSTACK_WEBHOOK_URL: z.url().optional(),
   PAYSTACK_BOOKING_CALLBACK_URL: z.url().optional(),
   HOST_APP_BASE_URL: z.url().default('http://localhost:3000'),
+  KRIBO_LOGO_URL: z.url().optional(),
   TWILIO_ACCOUNT_SID: z.string().min(1),
   TWILIO_AUTH_TOKEN: z.string().min(1),
   TWILIO_WHATSAPP_FROM: z.string().min(1),
@@ -39,13 +40,13 @@ const envSchema = z.object({
   CLOUDINARY_API_KEY: z.string().optional(),
   CLOUDINARY_API_SECRET: z.string().optional(),
   EMAIL_OTP_SECRET: z.string().min(12).optional(),
-  ADMIN_PAYOUT_NOTIFICATION_EMAILS: z
+  ADMIN_EMAILS: z
     .string()
     .default('')
     .transform((value) => parseEmailList(value))
     .refine(
       (emails) => emails.every((email) => z.string().email().safeParse(email).success),
-      'ADMIN_PAYOUT_NOTIFICATION_EMAILS must contain valid comma-separated email addresses',
+      'ADMIN_EMAILS must contain valid comma-separated email addresses',
     ),
   COMMISSION_RATE: z.coerce.number().min(0).max(1).default(0.12),
   PAYOUT_HOLD_DAYS: z.coerce.number().int().min(0).default(1),

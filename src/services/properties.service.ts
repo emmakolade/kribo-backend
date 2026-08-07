@@ -13,8 +13,37 @@ import {
   upsertAvailability,
 } from '../repositories/properties.repository';
 import { findUserById } from '../repositories/users.repository';
+import { UserModel } from '../models/user.model';
 import { AppError } from '../utils/AppError';
 import { dateRange } from '../utils/dates';
+
+const PROPERTY_EDITABLE_FIELDS = [
+  'name',
+  'description',
+  'city',
+  'area',
+  'fullAddress',
+  'amenities',
+  'photos',
+  'propertyType',
+] as const;
+
+type PropertyEditableField = (typeof PROPERTY_EDITABLE_FIELDS)[number];
+
+function sanitizePropertyUpdates(input: Record<string, unknown>): Partial<Record<PropertyEditableField, unknown>> {
+  const sanitized: Partial<Record<PropertyEditableField, unknown>> = {};
+  for (const key of PROPERTY_EDITABLE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(input, key)) {
+      sanitized[key] = input[key];
+    }
+  }
+
+  return sanitized;
+}
+
+function toComparable(value: unknown): string {
+  return JSON.stringify(value);
+}
 
 interface PropertyApiView {
   id: string;
@@ -155,11 +184,80 @@ export async function editPropertyListing(input: {
   propertyId: string;
   hostId: string;
   updates: Record<string, unknown>;
-}): Promise<void> {
-  const updated = await updateProperty(input.propertyId, input.hostId, input.updates);
-  if (!updated) {
+}): Promise<{ status: 'pending_admin_review' | 'no_changes' }> {
+  const property = await findPropertyById(input.propertyId);
+  if (!property || String(property.hostId) !== input.hostId) {
     throw new AppError('Property not found', 404, 'PROPERTY_NOT_FOUND');
   }
+
+  const user = await findUserById(input.hostId);
+  if (!user) {
+    throw new AppError('Host not found', 404, 'HOST_NOT_FOUND');
+  }
+
+  const sanitizedUpdates = sanitizePropertyUpdates(input.updates);
+  const changedOldValue: Record<string, unknown> = {};
+  const changedNewValue: Record<string, unknown> = {};
+
+  for (const key of PROPERTY_EDITABLE_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(sanitizedUpdates, key)) {
+      continue;
+    }
+
+    const nextValue = sanitizedUpdates[key];
+    const currentValue = property[key as keyof typeof property] as unknown;
+
+    if (toComparable(nextValue) !== toComparable(currentValue)) {
+      changedOldValue[key] = currentValue;
+      changedNewValue[key] = nextValue;
+    }
+  }
+
+  if (Object.keys(changedNewValue).length === 0) {
+    return { status: 'no_changes' };
+  }
+
+  const hasPendingRequestForProperty = Array.isArray(user.profileChangeRequests)
+    ? user.profileChangeRequests.some((row: Record<string, unknown>) => {
+        const newValue = (row?.newValue ?? {}) as Record<string, unknown>;
+        return row?.section === 'host_property'
+          && row?.status === 'pending'
+          && String(newValue.propertyId ?? '') === input.propertyId;
+      })
+    : false;
+
+  if (hasPendingRequestForProperty) {
+    throw new AppError(
+      'You already have a pending property update awaiting admin approval.',
+      409,
+      'PROFILE_CHANGE_ALREADY_PENDING',
+    );
+  }
+
+  await UserModel.findByIdAndUpdate(
+    new Types.ObjectId(input.hostId),
+    {
+      $push: {
+        profileChangeRequests: {
+          section: 'host_property',
+          status: 'pending',
+          requestedByUserId: new Types.ObjectId(input.hostId),
+          requestedAt: new Date(),
+          oldValue: {
+            propertyId: input.propertyId,
+            updates: changedOldValue,
+          },
+          newValue: {
+            propertyId: input.propertyId,
+            updates: changedNewValue,
+          },
+        },
+      },
+    },
+    { returnDocument: 'after' },
+  ).lean();
+
+  return { status: 'pending_admin_review' };
 }
 
 export async function getPropertyDetails(propertyId: string): Promise<unknown> {

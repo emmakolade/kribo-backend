@@ -67,6 +67,7 @@ export interface BankOptionDto {
 
 export interface HostOnboardingStatusDto {
   completed: boolean;
+  approvalStatus: 'pending' | 'approved' | 'rejected';
   details: {
     businessPhoneNumber: string;
     businessPhoneCountryIso: string;

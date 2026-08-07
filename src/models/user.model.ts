@@ -69,6 +69,8 @@ const userSchema = new Schema(
     },
     emailVerified: { type: Boolean, default: false },
     emailVerifiedAt: { type: Date, default: null },
+    isSuspended: { type: Boolean, default: false, index: true },
+    suspendedAt: { type: Date, default: null },
     hostVerified: { type: Boolean, default: false },
     bvn: { type: String },
     idDocumentUrl: { type: String },
@@ -79,6 +81,28 @@ const userSchema = new Schema(
       accountName: { type: String },
       recipientCode: { type: String },
     },
+    profileChangeRequests: [
+      {
+        section: {
+          type: String,
+          enum: ['host_manager', 'host_business_contact', 'host_property', 'guest_profile'],
+          required: true,
+        },
+        status: {
+          type: String,
+          enum: ['pending', 'approved', 'rejected'],
+          default: 'pending',
+          required: true,
+        },
+        requestedByUserId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+        requestedAt: { type: Date, default: Date.now, required: true },
+        reviewedAt: { type: Date, default: null },
+        reviewedByAdminId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+        note: { type: String, default: '' },
+        oldValue: { type: Schema.Types.Mixed, default: {} },
+        newValue: { type: Schema.Types.Mixed, default: {} },
+      },
+    ],
   },
   { timestamps: true },
 );

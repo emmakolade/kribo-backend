@@ -22,12 +22,12 @@ const allowedTransitions: Record<BookingStatus, BookingStatus[]> = {
     BookingStatus.DISPUTED,
   ],
   [BookingStatus.DECLINED]: [],
-  [BookingStatus.CHECKED_IN]: [BookingStatus.COMPLETED, BookingStatus.DISPUTED],
+  [BookingStatus.CHECKED_IN]: [BookingStatus.PAID_OUT, BookingStatus.DISPUTED],
   [BookingStatus.COMPLETED]: [BookingStatus.PAID_OUT, BookingStatus.DISPUTED],
   [BookingStatus.PAID_OUT]: [],
   [BookingStatus.CANCELLED_BY_GUEST]: [],
   [BookingStatus.CANCELLED_BY_HOST]: [],
-  [BookingStatus.DISPUTED]: [BookingStatus.COMPLETED],
+  [BookingStatus.DISPUTED]: [BookingStatus.PAID_OUT, BookingStatus.COMPLETED],
   [BookingStatus.ESCALATED]: [BookingStatus.CONFIRMED, BookingStatus.DECLINED],
 };
 

@@ -58,11 +58,31 @@ This document reflects the currently implemented REST endpoints in the backend.
 | POST   | /host/bookings/:id/withdraw                     | Yes  | host/admin                  |
 | POST   | /webhooks/whatsapp                              | No*  | Public (signature verified) |
 | POST   | /webhooks/paystack                              | No*  | Public (signature verified) |
+| GET    | /admin/overview                                 | Yes  | admin                       |
+| GET    | /admin/users                                    | Yes  | admin                       |
+| PATCH  | /admin/users/:id                                | Yes  | admin                       |
+| POST   | /admin/users/:id/suspend                        | Yes  | admin                       |
+| POST   | /admin/users/:id/restore                        | Yes  | admin                       |
+| GET    | /admin/properties                               | Yes  | admin                       |
+| PATCH  | /admin/properties/:id                           | Yes  | admin                       |
+| GET    | /admin/units                                    | Yes  | admin                       |
+| PATCH  | /admin/units/:id                                | Yes  | admin                       |
 | GET    | /admin/bookings                                 | Yes  | admin                       |
+| GET    | /admin/bookings/all                             | Yes  | admin                       |
+| PATCH  | /admin/bookings/:id/status                      | Yes  | admin                       |
 | POST   | /admin/bookings/:id/force-accept                | Yes  | admin                       |
 | POST   | /admin/bookings/:id/force-decline               | Yes  | admin                       |
+| GET    | /admin/payouts                                  | Yes  | admin                       |
+| POST   | /admin/payouts/:id/mark-paid-out                | Yes  | admin                       |
+| GET    | /admin/payments                                 | Yes  | admin                       |
 | GET    | /admin/disputes                                 | Yes  | admin                       |
+| GET    | /admin/disputes/all                             | Yes  | admin                       |
 | POST   | /admin/disputes/:id/resolve                     | Yes  | admin                       |
+| GET    | /admin/audit-logs                               | Yes  | admin                       |
+| GET    | /admin/onboarding/reviews                       | Yes  | admin                       |
+| POST   | /admin/onboarding/reviews/:id/decision          | Yes  | admin                       |
+| GET    | /admin/profile-change-requests                  | Yes  | admin                       |
+| POST   | /admin/profile-change-requests/:id/decision     | Yes  | admin                       |
 | GET    | /admin/hosts                                    | Yes  | admin                       |
 | GET    | /admin/host/:id/earnings                        | Yes  | admin                       |
 | GET    | /docs                                           | No   | Public                      |
@@ -272,6 +292,7 @@ Host register body uses the same fields with `"role": "host"`.
     "propertyType": "hotel",
     "status": {
       "completed": false,
+      "approvalStatus": "pending",
       "details": {
         "businessPhoneNumber": "+2348012345678",
         "businessPhoneCountryIso": "NG",
@@ -431,6 +452,7 @@ All endpoints below require auth and are host-only.
 ```
 
 - `businessPhoneNumber` and `trustedWhatsappNumber` are normalized and persisted in E.164 format.
+- If business contact has already been completed before, this endpoint creates a pending profile-change request with old/new values for admin approval instead of replacing active data immediately.
 
 - Response 200:
 
@@ -463,6 +485,8 @@ All endpoints below require auth and are host-only.
   "step": "manager"
 }
 ```
+
+- If manager onboarding has already been completed before, this endpoint creates a pending profile-change request with old/new values for admin approval instead of replacing active data immediately.
 
 #### GET /auth/onboarding/host/banks
 
@@ -502,6 +526,8 @@ All endpoints below require auth and are host-only.
   "step": "bank_account"
 }
 ```
+
+- Behavior: once a host account number has been saved, subsequent account-number changes are blocked here and must be handled by support.
 
 #### POST /auth/onboarding/host/bank-account/resolve-name
 
@@ -561,9 +587,13 @@ All endpoints below require auth and are host-only.
 ```json
 {
   "ok": true,
-  "status": "business_activated"
+  "status": "submitted_for_review"
 }
 ```
+
+- Behavior:
+  - When submission succeeds, host onboarding is locked for admin review until an approval decision is made.
+  - The system sends an email notification to configured admin recipients (`ADMIN_EMAILS`) so onboarding can be approved or rejected from admin dashboard.
 
 ### Guest Post-Signup Step
 
@@ -587,6 +617,7 @@ All endpoints below require auth and are host-only.
 
 - Note: `whatsappNumber` and `whatsappCountryIso` are required when `isWhatsappNumber` is `false`.
 - All submitted phone numbers are normalized and stored in E.164 format.
+- If guest profile has already been completed before, this endpoint creates a pending profile-change request with old/new values for admin approval instead of replacing active data immediately.
 - Response 200:
 
 ```json
@@ -730,9 +761,14 @@ All endpoints below require auth and are host-only.
 
 ```json
 {
-  "ok": true
+  "ok": true,
+  "status": "pending_admin_review"
 }
 ```
+
+- Behavior:
+  - For host edits, changed property fields are saved as a pending `host_property` profile change request with `oldValue` and `newValue`.
+  - Active property values are applied after admin approval of that request.
 
 ### POST /properties/:id/availability
 
@@ -1150,6 +1186,127 @@ Alternative property-first body:
 
 All admin endpoints require auth and role `admin`.
 
+### GET /admin/overview
+
+- Response 200: users and operations summary counters used by dashboard cards.
+
+### GET /admin/users
+
+- Query:
+  - `search` optional (`name/email/phone` partial match)
+  - `role` optional (`guest|host|admin`)
+  - `isSuspended` optional (`true|false`)
+  - `page`, `limit` optional pagination
+- Response 200: paginated users list.
+
+### PATCH /admin/users/:id
+
+- Body (any subset):
+
+```json
+{
+  "name": "Updated Name",
+  "role": "host",
+  "phoneNumber": "+2348012345678",
+  "hostVerified": true,
+  "emailVerified": true
+}
+```
+
+- Response 200: updated user.
+
+### POST /admin/users/:id/suspend
+
+- Response 200:
+
+```json
+{
+  "ok": true
+}
+```
+
+- Notes: suspended users cannot login or access protected routes.
+
+### POST /admin/users/:id/restore
+
+- Response 200:
+
+```json
+{
+  "ok": true
+}
+```
+
+### GET /admin/properties
+
+- Query:
+  - `search` optional (`name/city/area`)
+  - `city` optional
+  - `verified` optional (`true|false`)
+  - `bookingEnabled` optional (`true|false`)
+  - `page`, `limit` optional pagination
+- Response 200: paginated properties list.
+
+### PATCH /admin/properties/:id
+
+- Body (any subset):
+
+```json
+{
+  "verified": true,
+  "bookingEnabled": true,
+  "instantBookEligible": true,
+  "hostTrustTier": "trusted"
+}
+```
+
+- Response 200: updated property.
+
+### GET /admin/units
+
+- Query:
+  - `search` optional (`unit name` partial match)
+  - `propertyId` optional
+  - `hostId` optional
+  - `isAvailable` optional (`true|false`)
+  - `page`, `limit` optional pagination
+- Response 200: paginated unit list.
+
+### PATCH /admin/units/:id
+
+- Body (any subset):
+
+```json
+{
+  "name": "Deluxe Room",
+  "maxGuests": 3,
+  "pricePerNight": 85000,
+  "isAvailable": true
+}
+```
+
+- Response 200: updated unit.
+
+### GET /admin/bookings/all
+
+- Query:
+  - `search` optional (booking/host/guest ObjectId)
+  - `status` optional booking status
+  - `page`, `limit` optional pagination
+- Response 200: paginated bookings list.
+
+### PATCH /admin/bookings/:id/status
+
+- Body:
+
+```json
+{
+  "status": "completed"
+}
+```
+
+- Response 200: updated booking.
+
 ### GET /admin/bookings
 
 - Query:
@@ -1176,6 +1333,44 @@ All admin endpoints require auth and role `admin`.
 }
 ```
 
+### GET /admin/payouts
+
+- Query:
+  - `search` optional (transfer reference)
+  - `status` optional (`pending|completed|failed`)
+  - `page`, `limit` optional pagination
+- Response 200: paginated payouts list.
+
+### POST /admin/payouts/:id/mark-paid-out
+
+- `:id` is booking id.
+- Response 200:
+
+```json
+{
+  "ok": true
+}
+```
+
+- Behavior:
+  - marks payout `completed` with an admin transfer reference;
+  - sets booking status to `paid_out`.
+
+### GET /admin/payments
+
+- Query:
+  - `search` optional (`gatewayReference/internalReference`)
+  - `status` optional (`pending|success|failed|abandoned|refunded`)
+  - `page`, `limit` optional pagination
+- Response 200: paginated payments list.
+
+### GET /admin/disputes/all
+
+- Query:
+  - `status` optional (`open|resolved`)
+  - `page`, `limit` optional pagination
+- Response 200: paginated disputes list.
+
 ### GET /admin/disputes
 
 - Response 200: list of disputes.
@@ -1197,6 +1392,68 @@ All admin endpoints require auth and role `admin`.
   "ok": true
 }
 ```
+
+### GET /admin/audit-logs
+
+- Query:
+  - `action` optional (exact action name)
+  - `page`, `limit` optional pagination
+- Response 200: paginated admin action audit logs.
+
+### GET /admin/onboarding/reviews
+
+- Query:
+  - `search` optional (`name/email` partial match)
+  - `role` optional (`guest|host`)
+  - `status` optional (`pending|approved|rejected`)
+  - `page`, `limit` optional pagination
+- Response 200: paginated onboarding review queue including guest/host KYC details and uploaded document URLs.
+
+### POST /admin/onboarding/reviews/:id/decision
+
+- Body:
+
+```json
+{
+  "role": "host",
+  "decision": "approve",
+  "note": "NIN and bank account verified"
+}
+```
+
+- `role`: `guest | host`
+- `decision`: `approve | reject`
+- `note`: required when `decision` is `reject` (minimum 3 characters)
+- Response 200: summary of updated verification state.
+- Behavior: when `role=host` and `decision=reject`, system sends a host email containing the rejection reason note.
+
+### GET /admin/profile-change-requests
+
+- Query:
+  - `search` optional (`name/email` partial match)
+  - `role` optional (`guest|host`)
+  - `section` optional (`host_manager|host_business_contact|host_property|guest_profile`)
+  - `status` optional (`pending|approved|rejected`)
+  - `page`, `limit` optional pagination
+- Response 200: paginated profile change requests including section, old value, requested value, and review status.
+
+### POST /admin/profile-change-requests/:id/decision
+
+- Body:
+
+```json
+{
+  "decision": "approve",
+  "note": "Documents and contact details verified"
+}
+```
+
+- `decision`: `approve | reject`
+- `note`: required when `decision` is `reject` (minimum 3 characters)
+- Response 200: request decision summary.
+- Behavior:
+  - Approve applies the requested manager/business-contact/property/guest-profile values to active fields.
+  - Reject preserves existing active profile fields and records the review note.
 
 ### GET /admin/hosts
 

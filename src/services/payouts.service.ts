@@ -6,12 +6,34 @@ import {
   listPendingPayoutsByHost,
   listPayoutsByHost,
 } from '../repositories/payouts.repository';
+// import { completePayoutByBookingId } from '../repositories/payouts.repository';
 import { findUserById } from '../repositories/users.repository';
 import { env } from '../config/env';
 import { BookingStatus } from '../types/booking';
 import { AppError } from '../utils/AppError';
 import { logger } from '../utils/logger';
 import { emailService } from './email.service';
+// import { paystackService } from './paystack.service';
+
+// Legacy auto-payout helper kept intentionally as comment for quick rollback.
+// async function markBookingPaidOut(bookingId: string): Promise<void> {
+//   const booking = await BookingModel.findById(bookingId).lean();
+//   if (!booking || booking.status === BookingStatus.PAID_OUT) {
+//     return;
+//   }
+//
+//   if (booking.status === BookingStatus.CHECKED_IN) {
+//     await BookingModel.findByIdAndUpdate(bookingId, {
+//       status: BookingStatus.COMPLETED,
+//       $push: { stateHistory: { status: BookingStatus.COMPLETED, timestamp: new Date() } },
+//     });
+//   }
+//
+//   await BookingModel.findByIdAndUpdate(bookingId, {
+//     status: BookingStatus.PAID_OUT,
+//     $push: { stateHistory: { status: BookingStatus.PAID_OUT, timestamp: new Date() } },
+//   });
+// }
 
 export async function processHostPayoutRequest(bookingId: string): Promise<void> {
   const booking = await BookingModel.findById(bookingId).lean();
@@ -34,6 +56,7 @@ export async function processHostPayoutRequest(bookingId: string): Promise<void>
 
   if (payout.status === 'completed') {
     // Admin has already processed this payout manually.
+    // await markBookingPaidOut(bookingId);
     return;
   }
 
@@ -47,11 +70,11 @@ export async function processHostPayoutRequest(bookingId: string): Promise<void>
     throw new AppError('Host bank payout details are missing', 409, 'HOST_PAYOUT_ACCOUNT_MISSING');
   }
 
-  if (env.ADMIN_PAYOUT_NOTIFICATION_EMAILS.length === 0) {
+  if (env.ADMIN_EMAILS.length === 0) {
     throw new AppError(
       'Admin payout notification emails are not configured',
       500,
-      'ADMIN_PAYOUT_NOTIFICATION_EMAILS_NOT_CONFIGURED',
+      'ADMIN_EMAILS_NOT_CONFIGURED',
     );
   }
 
@@ -65,11 +88,14 @@ export async function processHostPayoutRequest(bookingId: string): Promise<void>
   // await markBookingPaidOut(bookingId);
 
   await emailService.sendAdminManualPayoutRequestEmail({
-    to: env.ADMIN_PAYOUT_NOTIFICATION_EMAILS,
+    to: env.ADMIN_EMAILS,
     bookingId: String(booking._id),
     hostName: host.name,
     hostEmail: host.email,
     amount: booking.payoutAmount,
+    bankName: host.hostCompliance?.bankAccount?.bankName ?? host.bankDetails?.bankName ?? 'N/A',
+    accountName: host.hostCompliance?.bankAccount?.accountName ?? host.bankDetails?.accountName ?? 'N/A',
+    accountNumber: host.hostCompliance?.bankAccount?.accountNumber ?? host.bankDetails?.accountNumber ?? 'N/A',
     recipientCode: host.bankDetails.recipientCode,
     transferReference: payout.transferReference,
   });

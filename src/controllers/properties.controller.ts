@@ -41,13 +41,13 @@ export async function createPropertyController(req: Request, res: Response): Pro
 
 export async function patchPropertyController(req: Request, res: Response): Promise<void> {
   const id = getRequiredIdParam(req);
-  await editPropertyListing({
+  const result = await editPropertyListing({
     propertyId: id,
     hostId: req.user!.userId,
     updates: req.body as Record<string, unknown>,
   });
 
-  res.status(200).json({ ok: true });
+  res.status(200).json({ ok: true, status: result.status });
 }
 
 export async function searchPropertiesController(req: Request, res: Response): Promise<void> {

@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
+import { Types } from 'mongoose';
 import {
   ACCESS_TOKEN_EXPIRES_IN,
   EMAIL_OTP_EXPIRY_MINUTES,
@@ -9,6 +10,7 @@ import {
   REFRESH_TOKEN_EXPIRES_IN,
 } from '../config/constants';
 import { env } from '../config/env';
+import { UserModel } from '../models/user.model';
 import { AppError } from '../utils/AppError';
 import {
   createUser,
@@ -57,6 +59,8 @@ interface AuthTokens {
   refreshToken: string;
 }
 
+type ProfileChangeSection = 'host_manager' | 'host_business_contact' | 'host_property' | 'guest_profile';
+
 function issueAuthTokens(userId: string, role: UserRole): AuthTokens {
   const accessToken = jwt.sign({ sub: userId, role, tokenType: 'access' }, env.JWT_SECRET, {
     expiresIn: ACCESS_TOKEN_EXPIRES_IN,
@@ -86,6 +90,53 @@ function splitName(fullName: string | undefined): { firstName: string; lastName:
   const lastName = parts.slice(1).join(' ') || 'User';
 
   return { firstName, lastName };
+}
+
+function normalizeIsoDate(dateValue: Date | string | undefined | null): string {
+  if (!dateValue) {
+    return '';
+  }
+
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  return date.toISOString().slice(0, 10);
+}
+
+function toComparableJson(value: Record<string, unknown>): string {
+  return JSON.stringify(value);
+}
+
+function hasPendingChangeRequest(user: Record<string, any>, section: ProfileChangeSection): boolean {
+  const rows = Array.isArray(user.profileChangeRequests) ? user.profileChangeRequests : [];
+  return rows.some((row) => row?.section === section && row?.status === 'pending');
+}
+
+async function queueProfileChangeRequest(input: {
+  userId: string;
+  requestedByUserId: string;
+  section: ProfileChangeSection;
+  oldValue: Record<string, unknown>;
+  newValue: Record<string, unknown>;
+}): Promise<void> {
+  await UserModel.findByIdAndUpdate(
+    new Types.ObjectId(input.userId),
+    {
+      $push: {
+        profileChangeRequests: {
+          section: input.section,
+          status: 'pending',
+          requestedByUserId: new Types.ObjectId(input.requestedByUserId),
+          requestedAt: new Date(),
+          oldValue: input.oldValue,
+          newValue: input.newValue,
+        },
+      },
+    },
+    { returnDocument: 'after' },
+  ).lean();
 }
 
 async function resolveBankNameByCode(bankCode: string): Promise<string> {
@@ -151,6 +202,10 @@ export async function login(input: {
   const user = await findUserByEmail(input.email);
   if (!user) {
     throw new AppError('Invalid credentials', 401, 'INVALID_CREDENTIALS');
+  }
+
+  if (user.isSuspended) {
+    throw new AppError('Your account is suspended. Please contact support.', 403, 'ACCOUNT_SUSPENDED');
   }
 
   const valid = await bcrypt.compare(input.password, user.passwordHash);
@@ -227,6 +282,11 @@ export async function verifyEmailOtp(input: VerifyEmailOtpInput): Promise<{ ok: 
 }
 
 export async function completeHostBusinessContact(userId: string, input: HostBusinessContactOnboardingDto): Promise<void> {
+  const user = await findUserById(userId);
+  if (!user) {
+    throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+  }
+
   const normalizedBusinessPhone = normalizePhoneToE164({
     rawPhone: input.businessPhoneNumber,
     countryIso: input.businessPhoneCountryIso,
@@ -241,17 +301,67 @@ export async function completeHostBusinessContact(userId: string, input: HostBus
     errorMessage: 'Enter a valid trusted WhatsApp number',
   });
 
+  const newValue = {
+    businessPhoneNumber: normalizedBusinessPhone.e164,
+    businessPhoneCountryIso: normalizedBusinessPhone.countryIso,
+    businessPhoneCountryDialCode: normalizedBusinessPhone.countryDialCode,
+    trustedWhatsappNumber: normalizedTrustedWhatsapp.e164,
+    trustedWhatsappCountryIso: normalizedTrustedWhatsapp.countryIso,
+    trustedWhatsappCountryDialCode: normalizedTrustedWhatsapp.countryDialCode,
+    officeAddress: input.officeAddress,
+    officeLga: input.officeLga,
+    officeState: input.officeState,
+    website: input.website ?? '',
+  };
+
+  const wasCompletedBefore = Boolean(user.hostCompliance?.businessContact?.completedAt);
+  if (wasCompletedBefore) {
+    if (hasPendingChangeRequest(user as Record<string, any>, 'host_business_contact')) {
+      throw new AppError(
+        'You already have a pending business-contact update awaiting admin approval.',
+        409,
+        'PROFILE_CHANGE_ALREADY_PENDING',
+      );
+    }
+
+    const oldValue = {
+      businessPhoneNumber: user.hostCompliance?.businessContact?.businessPhoneNumber ?? '',
+      businessPhoneCountryIso: user.hostCompliance?.businessContact?.businessPhoneCountryIso ?? '',
+      businessPhoneCountryDialCode: user.hostCompliance?.businessContact?.businessPhoneCountryDialCode ?? '',
+      trustedWhatsappNumber: user.hostCompliance?.businessContact?.trustedWhatsappNumber ?? '',
+      trustedWhatsappCountryIso: user.hostCompliance?.businessContact?.trustedWhatsappCountryIso ?? '',
+      trustedWhatsappCountryDialCode: user.hostCompliance?.businessContact?.trustedWhatsappCountryDialCode ?? '',
+      officeAddress: user.hostCompliance?.businessContact?.officeAddress ?? '',
+      officeLga: user.hostCompliance?.businessContact?.officeLga ?? '',
+      officeState: user.hostCompliance?.businessContact?.officeState ?? '',
+      website: user.hostCompliance?.businessContact?.website ?? '',
+    };
+
+    if (toComparableJson(oldValue) === toComparableJson(newValue)) {
+      return;
+    }
+
+    await queueProfileChangeRequest({
+      userId,
+      requestedByUserId: userId,
+      section: 'host_business_contact',
+      oldValue,
+      newValue,
+    });
+    return;
+  }
+
   const updated = await updateUserById(userId, {
-    'hostCompliance.businessContact.businessPhoneNumber': normalizedBusinessPhone.e164,
-    'hostCompliance.businessContact.businessPhoneCountryIso': normalizedBusinessPhone.countryIso,
-    'hostCompliance.businessContact.businessPhoneCountryDialCode': normalizedBusinessPhone.countryDialCode,
-    'hostCompliance.businessContact.trustedWhatsappNumber': normalizedTrustedWhatsapp.e164,
-    'hostCompliance.businessContact.trustedWhatsappCountryIso': normalizedTrustedWhatsapp.countryIso,
-    'hostCompliance.businessContact.trustedWhatsappCountryDialCode': normalizedTrustedWhatsapp.countryDialCode,
-    'hostCompliance.businessContact.officeAddress': input.officeAddress,
-    'hostCompliance.businessContact.officeLga': input.officeLga,
-    'hostCompliance.businessContact.officeState': input.officeState,
-    'hostCompliance.businessContact.website': input.website,
+    'hostCompliance.businessContact.businessPhoneNumber': newValue.businessPhoneNumber,
+    'hostCompliance.businessContact.businessPhoneCountryIso': newValue.businessPhoneCountryIso,
+    'hostCompliance.businessContact.businessPhoneCountryDialCode': newValue.businessPhoneCountryDialCode,
+    'hostCompliance.businessContact.trustedWhatsappNumber': newValue.trustedWhatsappNumber,
+    'hostCompliance.businessContact.trustedWhatsappCountryIso': newValue.trustedWhatsappCountryIso,
+    'hostCompliance.businessContact.trustedWhatsappCountryDialCode': newValue.trustedWhatsappCountryDialCode,
+    'hostCompliance.businessContact.officeAddress': newValue.officeAddress,
+    'hostCompliance.businessContact.officeLga': newValue.officeLga,
+    'hostCompliance.businessContact.officeState': newValue.officeState,
+    'hostCompliance.businessContact.website': newValue.website,
     'hostCompliance.businessContact.completedAt': new Date(),
   });
 
@@ -261,6 +371,55 @@ export async function completeHostBusinessContact(userId: string, input: HostBus
 }
 
 export async function completeHostManager(userId: string, input: HostManagerOnboardingDto): Promise<void> {
+  const user = await findUserById(userId);
+  if (!user) {
+    throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+  }
+
+  const newValue = {
+    managerName: input.managerName,
+    dateOfBirth: normalizeIsoDate(input.dateOfBirth),
+    nationality: input.nationality,
+    ninNumber: input.ninNumber,
+    ninDocumentUrl: input.ninDocumentUrl,
+    managerHomeAddress: input.managerHomeAddress,
+    proofOfAddressUrl: input.proofOfAddressUrl,
+  };
+
+  const wasCompletedBefore = Boolean(user.hostCompliance?.manager?.completedAt);
+  if (wasCompletedBefore) {
+    if (hasPendingChangeRequest(user as Record<string, any>, 'host_manager')) {
+      throw new AppError(
+        'You already have a pending manager-info update awaiting admin approval.',
+        409,
+        'PROFILE_CHANGE_ALREADY_PENDING',
+      );
+    }
+
+    const oldValue = {
+      managerName: user.hostCompliance?.manager?.managerName ?? '',
+      dateOfBirth: normalizeIsoDate(user.hostCompliance?.manager?.dateOfBirth),
+      nationality: user.hostCompliance?.manager?.nationality ?? '',
+      ninNumber: user.hostCompliance?.manager?.ninNumber ?? '',
+      ninDocumentUrl: user.hostCompliance?.manager?.ninDocumentUrl ?? '',
+      managerHomeAddress: user.hostCompliance?.manager?.managerHomeAddress ?? '',
+      proofOfAddressUrl: user.hostCompliance?.manager?.proofOfAddressUrl ?? '',
+    };
+
+    if (toComparableJson(oldValue) === toComparableJson(newValue)) {
+      return;
+    }
+
+    await queueProfileChangeRequest({
+      userId,
+      requestedByUserId: userId,
+      section: 'host_manager',
+      oldValue,
+      newValue,
+    });
+    return;
+  }
+
   const updated = await updateUserById(userId, {
     'hostCompliance.manager.managerName': input.managerName,
     'hostCompliance.manager.dateOfBirth': new Date(input.dateOfBirth),
@@ -278,6 +437,20 @@ export async function completeHostManager(userId: string, input: HostManagerOnbo
 }
 
 export async function completeHostBankAccount(userId: string, input: HostBankAccountOnboardingDto): Promise<void> {
+  const user = await findUserById(userId);
+  if (!user) {
+    throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+  }
+
+  const currentAccountNumber = user.hostCompliance?.bankAccount?.accountNumber ?? user.bankDetails?.accountNumber ?? '';
+  if (currentAccountNumber && currentAccountNumber !== input.accountNumber) {
+    throw new AppError(
+      'Bank account number cannot be changed here. Please contact support.',
+      403,
+      'BANK_ACCOUNT_CHANGE_REQUIRES_SUPPORT',
+    );
+  }
+
   const bankName = await resolveBankNameByCode(input.bankCode);
   const { recipientCode } = await paystackService.createTransferRecipient({
     accountNumber: input.accountNumber,
@@ -360,6 +533,19 @@ export async function getAuthMe(userId: string): Promise<AuthMeResponseDto> {
     return typeof value === 'string' && value.trim().length > 0;
   });
 
+  const businessStepDone = Boolean(user.hostCompliance?.businessContact?.completedAt);
+  const managerStepDone = Boolean(user.hostCompliance?.manager?.completedAt);
+  const bankStepDone = Boolean(user.hostCompliance?.bankAccount?.completedAt);
+  const agreementStepDone = user.hostCompliance?.serviceAgreement?.accepted === true;
+  const hostOnboardingCompleted = businessStepDone && managerStepDone && bankStepDone && agreementStepDone;
+
+  const bankVerificationStatus = String(user.hostCompliance?.bankAccount?.verificationStatus ?? '').toLowerCase();
+  const hostApprovalStatus: 'pending' | 'approved' | 'rejected' = user.hostCompliance?.isBusinessActive === true
+    ? 'approved'
+    : bankVerificationStatus === 'rejected'
+      ? 'rejected'
+      : 'pending';
+
   const guestDetails = {
     phoneNumber: user.guestOnboarding?.phoneNumber ?? '',
     phoneCountryIso: user.guestOnboarding?.phoneCountryIso ?? 'NG',
@@ -394,7 +580,8 @@ export async function getAuthMe(userId: string): Promise<AuthMeResponseDto> {
       propertyName: user.hostOnboarding?.propertyName ?? '',
       propertyType: user.hostOnboarding?.propertyType === 'shortlet' ? 'shortlet' : 'hotel',
       status: {
-        completed: user.hostCompliance?.isBusinessActive === true,
+        completed: hostOnboardingCompleted,
+        approvalStatus: hostApprovalStatus,
         details: hasHostDetails ? hostDetails : null,
       },
     },
@@ -439,17 +626,39 @@ export async function activateHostBusiness(userId: string): Promise<void> {
   }
 
   const updated = await updateUserById(userId, {
-    hostVerified: true,
-    'hostCompliance.isBusinessActive': true,
-    'hostCompliance.activatedAt': new Date(),
+    hostVerified: false,
+    'hostCompliance.bankAccount.verificationStatus': 'pending_manual_review',
+    'hostCompliance.isBusinessActive': false,
+    'hostCompliance.activatedAt': null,
   });
 
   if (!updated) {
     throw new AppError('User not found', 404, 'USER_NOT_FOUND');
   }
+
+  if (env.ADMIN_EMAILS.length > 0) {
+    try {
+      await emailService.sendAdminHostOnboardingSubmittedEmail({
+        to: env.ADMIN_EMAILS,
+        hostName: updated.name,
+        hostEmail: updated.email,
+        propertyName: updated.hostOnboarding?.propertyName ?? '',
+        propertyType: updated.hostOnboarding?.propertyType ?? '',
+      });
+    }
+    catch (error) {
+      // Activation succeeds even if email delivery fails.
+      console.error('Failed to send host onboarding submission email to admins', error);
+    }
+  }
 }
 
 export async function completeGuestProfile(userId: string, input: GuestProfileOnboardingDto): Promise<void> {
+  const user = await findUserById(userId);
+  if (!user) {
+    throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+  }
+
   if (!input.isWhatsappNumber && !input.whatsappNumber) {
     throw new AppError('whatsappNumber is required when isWhatsappNumber is false', 400, 'WHATSAPP_NUMBER_REQUIRED');
   }
@@ -470,19 +679,67 @@ export async function completeGuestProfile(userId: string, input: GuestProfileOn
       errorMessage: 'Enter a valid WhatsApp number',
     });
 
-  const updated = await updateUserById(userId, {
+  const newValue = {
     phoneNumber: normalizedPhoneNumber.e164,
     phoneCountryIso: normalizedPhoneNumber.countryIso,
     phoneCountryDialCode: normalizedPhoneNumber.countryDialCode,
-    'guestOnboarding.phoneNumber': normalizedPhoneNumber.e164,
-    'guestOnboarding.phoneCountryIso': normalizedPhoneNumber.countryIso,
-    'guestOnboarding.phoneCountryDialCode': normalizedPhoneNumber.countryDialCode,
-    'guestOnboarding.isWhatsappNumber': input.isWhatsappNumber,
-    'guestOnboarding.whatsappNumber': normalizedWhatsappNumber.e164,
-    'guestOnboarding.whatsappCountryIso': normalizedWhatsappNumber.countryIso,
-    'guestOnboarding.whatsappCountryDialCode': normalizedWhatsappNumber.countryDialCode,
-    'guestOnboarding.ninNumber': input.ninNumber,
-    'guestOnboarding.ninDocumentUrl': input.ninDocumentUrl,
+    isWhatsappNumber: input.isWhatsappNumber,
+    whatsappNumber: normalizedWhatsappNumber.e164,
+    whatsappCountryIso: normalizedWhatsappNumber.countryIso,
+    whatsappCountryDialCode: normalizedWhatsappNumber.countryDialCode,
+    ninNumber: input.ninNumber,
+    ninDocumentUrl: input.ninDocumentUrl,
+  };
+
+  const wasCompletedBefore = Boolean(user.guestOnboarding?.completedAt);
+  if (wasCompletedBefore) {
+    if (hasPendingChangeRequest(user as Record<string, any>, 'guest_profile')) {
+      throw new AppError(
+        'You already have a pending guest-profile update awaiting admin approval.',
+        409,
+        'PROFILE_CHANGE_ALREADY_PENDING',
+      );
+    }
+
+    const oldValue = {
+      phoneNumber: user.guestOnboarding?.phoneNumber ?? '',
+      phoneCountryIso: user.guestOnboarding?.phoneCountryIso ?? '',
+      phoneCountryDialCode: user.guestOnboarding?.phoneCountryDialCode ?? '',
+      isWhatsappNumber: user.guestOnboarding?.isWhatsappNumber === true,
+      whatsappNumber: user.guestOnboarding?.whatsappNumber ?? '',
+      whatsappCountryIso: user.guestOnboarding?.whatsappCountryIso ?? '',
+      whatsappCountryDialCode: user.guestOnboarding?.whatsappCountryDialCode ?? '',
+      ninNumber: user.guestOnboarding?.ninNumber ?? '',
+      ninDocumentUrl: user.guestOnboarding?.ninDocumentUrl ?? '',
+    };
+
+    if (toComparableJson(oldValue) === toComparableJson(newValue)) {
+      return;
+    }
+
+    await queueProfileChangeRequest({
+      userId,
+      requestedByUserId: userId,
+      section: 'guest_profile',
+      oldValue,
+      newValue,
+    });
+    return;
+  }
+
+  const updated = await updateUserById(userId, {
+    phoneNumber: newValue.phoneNumber,
+    phoneCountryIso: newValue.phoneCountryIso,
+    phoneCountryDialCode: newValue.phoneCountryDialCode,
+    'guestOnboarding.phoneNumber': newValue.phoneNumber,
+    'guestOnboarding.phoneCountryIso': newValue.phoneCountryIso,
+    'guestOnboarding.phoneCountryDialCode': newValue.phoneCountryDialCode,
+    'guestOnboarding.isWhatsappNumber': newValue.isWhatsappNumber,
+    'guestOnboarding.whatsappNumber': newValue.whatsappNumber,
+    'guestOnboarding.whatsappCountryIso': newValue.whatsappCountryIso,
+    'guestOnboarding.whatsappCountryDialCode': newValue.whatsappCountryDialCode,
+    'guestOnboarding.ninNumber': newValue.ninNumber,
+    'guestOnboarding.ninDocumentUrl': newValue.ninDocumentUrl,
     'guestOnboarding.verified': false,
     'guestOnboarding.completedAt': new Date(),
   });
