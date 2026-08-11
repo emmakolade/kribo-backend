@@ -9,7 +9,6 @@ import {
   listUnitsByProperty,
   setPropertyBookingAvailability,
   searchPropertiesByTypeAndPrice,
-  updateProperty,
   upsertAvailability,
 } from '../repositories/properties.repository';
 import { findUserById } from '../repositories/users.repository';
@@ -30,7 +29,9 @@ const PROPERTY_EDITABLE_FIELDS = [
 
 type PropertyEditableField = (typeof PROPERTY_EDITABLE_FIELDS)[number];
 
-function sanitizePropertyUpdates(input: Record<string, unknown>): Partial<Record<PropertyEditableField, unknown>> {
+function sanitizePropertyUpdates(
+  input: Record<string, unknown>,
+): Partial<Record<PropertyEditableField, unknown>> {
   const sanitized: Partial<Record<PropertyEditableField, unknown>> = {};
   for (const key of PROPERTY_EDITABLE_FIELDS) {
     if (Object.prototype.hasOwnProperty.call(input, key)) {
@@ -94,7 +95,7 @@ function mapPropertyToApiView(input: {
   }>;
 }): PropertyApiView {
   const units = input.units;
-  const cheapestUnit = units.reduce<typeof units[number] | undefined>((currentCheapest, unit) => {
+  const cheapestUnit = units.reduce<(typeof units)[number] | undefined>((currentCheapest, unit) => {
     if (!currentCheapest) {
       return unit;
     }
@@ -126,7 +127,7 @@ function mapPropertyToApiView(input: {
     images: input.property.photos,
     amenities: input.property.amenities,
     description: input.property.description,
-    cancellationPolicy: '',    
+    cancellationPolicy: '',
   };
 }
 
@@ -218,11 +219,13 @@ export async function editPropertyListing(input: {
   }
 
   const hasPendingRequestForProperty = Array.isArray(user.profileChangeRequests)
-    ? user.profileChangeRequests.some((row: Record<string, unknown>) => {
+    ? user.profileChangeRequests.some((row) => {
         const newValue = (row?.newValue ?? {}) as Record<string, unknown>;
-        return row?.section === 'host_property'
-          && row?.status === 'pending'
-          && String(newValue.propertyId ?? '') === input.propertyId;
+        return (
+          row?.section === 'host_property' &&
+          row?.status === 'pending' &&
+          String(newValue.propertyId ?? '') === input.propertyId
+        );
       })
     : false;
 
@@ -280,7 +283,9 @@ export async function getPropertyApiDetails(propertyId: string): Promise<Propert
   return mapPropertyToApiView({ property, units });
 }
 
-export async function getHostPrimaryPropertyApiView(hostId: string): Promise<PropertyApiView | null> {
+export async function getHostPrimaryPropertyApiView(
+  hostId: string,
+): Promise<PropertyApiView | null> {
   const property = await findLatestPropertyByHostId(hostId);
   if (!property) {
     return null;
@@ -337,16 +342,23 @@ export async function searchAvailableProperties(input: {
   const checkOut = new Date(input.checkOut);
   const dates = dateRange(checkIn, checkOut);
 
-  const properties = await searchPropertiesByTypeAndPrice(input.type, input.priceMin, input.priceMax);
+  const properties = await searchPropertiesByTypeAndPrice(
+    input.type,
+    input.priceMin,
+    input.priceMax,
+  );
 
   const available = await Promise.all(
     properties.map(async (property) => {
       const filteredUnits = await Promise.all(
         property.units
           .filter((u) => {
-            const guestFilterPass = typeof input.guests === 'number' ? u.maxGuests >= input.guests : true;
-            const minPricePass = typeof input.priceMin === 'number' ? u.pricePerNight >= input.priceMin : true;
-            const maxPricePass = typeof input.priceMax === 'number' ? u.pricePerNight <= input.priceMax : true;
+            const guestFilterPass =
+              typeof input.guests === 'number' ? u.maxGuests >= input.guests : true;
+            const minPricePass =
+              typeof input.priceMin === 'number' ? u.pricePerNight >= input.priceMin : true;
+            const maxPricePass =
+              typeof input.priceMax === 'number' ? u.pricePerNight <= input.priceMax : true;
             return guestFilterPass && minPricePass && maxPricePass;
           })
           .map(async (unit) => {
@@ -354,7 +366,11 @@ export async function searchAvailableProperties(input: {
               return null;
             }
 
-            const rows = await listAvailabilityByUnitAndDateRange(String(unit._id), checkIn, checkOut);
+            const rows = await listAvailabilityByUnitAndDateRange(
+              String(unit._id),
+              checkIn,
+              checkOut,
+            );
             const openCount = rows.filter((row) => row.status === 'open').length;
             return openCount === dates.length ? unit : null;
           }),
@@ -374,7 +390,10 @@ export async function searchAvailableProperties(input: {
 
   return available
     .filter((p): p is NonNullable<typeof p> => p !== null)
-    .sort((a, b) => Number(Boolean(b.bookingEnabled ?? true)) - Number(Boolean(a.bookingEnabled ?? true)));
+    .sort(
+      (a, b) =>
+        Number(Boolean(b.bookingEnabled ?? true)) - Number(Boolean(a.bookingEnabled ?? true)),
+    );
 }
 
 export async function listPropertyApiViews(input: {
@@ -385,7 +404,11 @@ export async function listPropertyApiViews(input: {
   propertyType?: PropertyType;
   amenities?: string[];
 }): Promise<PropertyApiView[]> {
-  const matched = await searchPropertiesByTypeAndPrice(input.propertyType, input.priceMin, input.priceMax);
+  const matched = await searchPropertiesByTypeAndPrice(
+    input.propertyType,
+    input.priceMin,
+    input.priceMax,
+  );
 
   return matched
     .filter((entry) => {
@@ -394,16 +417,19 @@ export async function listPropertyApiViews(input: {
         ? `${entry.city} ${entry.area}`.toLowerCase().includes(input.location.toLowerCase())
         : true;
 
-      const amenitiesPass = input.amenities && input.amenities.length > 0
-        ? input.amenities.every((amenity) => entry.amenities.includes(amenity as never))
-        : true;
+      const amenitiesPass =
+        input.amenities && input.amenities.length > 0
+          ? input.amenities.every((amenity) => entry.amenities.includes(amenity as never))
+          : true;
 
-      const guestPass = typeof guests === 'number'
-        ? entry.units.some((unit) => unit.maxGuests >= guests)
-        : true;
+      const guestPass =
+        typeof guests === 'number' ? entry.units.some((unit) => unit.maxGuests >= guests) : true;
 
       return locationPass && amenitiesPass && guestPass;
     })
-    .sort((a, b) => Number(Boolean(b.bookingEnabled ?? true)) - Number(Boolean(a.bookingEnabled ?? true)))
+    .sort(
+      (a, b) =>
+        Number(Boolean(b.bookingEnabled ?? true)) - Number(Boolean(a.bookingEnabled ?? true)),
+    )
     .map((entry) => mapPropertyToApiView({ property: entry, units: entry.units }));
 }
