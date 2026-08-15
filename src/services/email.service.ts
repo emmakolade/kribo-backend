@@ -244,10 +244,9 @@ class EnvironmentEmailService implements EmailService {
       });
     } else {
       this.transporter = nodemailer.createTransport({
-        // host: env.SMTP_HOST,
-        // port: env.SMTP_PORT,
-        // secure: env.SMTP_SECURE,
-        service: 'gmail',
+        host: env.SMTP_HOST,
+        port: env.SMTP_PORT,
+        secure: env.SMTP_SECURE,
         auth: {
           user: env.SMTP_USER,
           pass: env.SMTP_PASS,
