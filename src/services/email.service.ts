@@ -77,13 +77,25 @@ export interface EmailSendResult {
 
 interface EmailService {
   sendOtpEmail(input: SendOtpEmailInput): Promise<EmailSendResult>;
-  sendHostConfirmedBookingEmail(input: SendHostConfirmedBookingEmailInput): Promise<EmailSendResult>;
+  sendHostConfirmedBookingEmail(
+    input: SendHostConfirmedBookingEmailInput,
+  ): Promise<EmailSendResult>;
   sendHostCheckInReminderEmail(input: SendHostCheckInReminderEmailInput): Promise<EmailSendResult>;
-  sendHostAvailabilityReminderEmail(input: SendHostAvailabilityReminderEmailInput): Promise<EmailSendResult>;
-  sendAdminManualPayoutRequestEmail(input: SendAdminManualPayoutRequestEmailInput): Promise<EmailSendResult>;
-  sendHostOnboardingRejectedEmail(input: SendHostOnboardingRejectedEmailInput): Promise<EmailSendResult>;
-  sendAdminHostOnboardingSubmittedEmail(input: SendAdminHostOnboardingSubmittedEmailInput): Promise<EmailSendResult>;
-  sendHostOnboardingApprovedEmail(input: SendHostOnboardingApprovedEmailInput): Promise<EmailSendResult>;
+  sendHostAvailabilityReminderEmail(
+    input: SendHostAvailabilityReminderEmailInput,
+  ): Promise<EmailSendResult>;
+  sendAdminManualPayoutRequestEmail(
+    input: SendAdminManualPayoutRequestEmailInput,
+  ): Promise<EmailSendResult>;
+  sendHostOnboardingRejectedEmail(
+    input: SendHostOnboardingRejectedEmailInput,
+  ): Promise<EmailSendResult>;
+  sendAdminHostOnboardingSubmittedEmail(
+    input: SendAdminHostOnboardingSubmittedEmailInput,
+  ): Promise<EmailSendResult>;
+  sendHostOnboardingApprovedEmail(
+    input: SendHostOnboardingApprovedEmailInput,
+  ): Promise<EmailSendResult>;
 }
 
 function buildHostLoginRedirectUrl(redirectPath: string): string {
@@ -102,7 +114,9 @@ function buildAdminLoginRedirectUrl(redirectPath: string): string {
   return authUrl.toString();
 }
 
-function formatPropertyAvailabilityLines(properties: Array<{ propertyName: string; bookingEnabled: boolean }>): string[] {
+function formatPropertyAvailabilityLines(
+  properties: Array<{ propertyName: string; bookingEnabled: boolean }>,
+): string[] {
   return properties.map((property) => {
     const state = property.bookingEnabled ? 'ON' : 'OFF';
     return `- ${property.propertyName}: ${state}`;
@@ -230,9 +244,10 @@ class EnvironmentEmailService implements EmailService {
       });
     } else {
       this.transporter = nodemailer.createTransport({
-        host: env.SMTP_HOST,
-        port: env.SMTP_PORT,
-        secure: env.SMTP_SECURE,
+        // host: env.SMTP_HOST,
+        // port: env.SMTP_PORT,
+        // secure: env.SMTP_SECURE,
+        service: 'gmail',
         auth: {
           user: env.SMTP_USER,
           pass: env.SMTP_PASS,
@@ -253,8 +268,12 @@ class EnvironmentEmailService implements EmailService {
     });
   }
 
-  public async sendHostConfirmedBookingEmail(input: SendHostConfirmedBookingEmailInput): Promise<EmailSendResult> {
-    const reviewBookingLink = buildHostLoginRedirectUrl(`/host/bookings/${encodeURIComponent(input.bookingId)}`);
+  public async sendHostConfirmedBookingEmail(
+    input: SendHostConfirmedBookingEmailInput,
+  ): Promise<EmailSendResult> {
+    const reviewBookingLink = buildHostLoginRedirectUrl(
+      `/host/bookings/${encodeURIComponent(input.bookingId)}`,
+    );
 
     return this.sendKriboEmail({
       to: input.to,
@@ -283,8 +302,12 @@ class EnvironmentEmailService implements EmailService {
     });
   }
 
-  public async sendHostCheckInReminderEmail(input: SendHostCheckInReminderEmailInput): Promise<EmailSendResult> {
-    const checkInLink = buildHostLoginRedirectUrl(`/host/bookings/${encodeURIComponent(input.bookingId)}`);
+  public async sendHostCheckInReminderEmail(
+    input: SendHostCheckInReminderEmailInput,
+  ): Promise<EmailSendResult> {
+    const checkInLink = buildHostLoginRedirectUrl(
+      `/host/bookings/${encodeURIComponent(input.bookingId)}`,
+    );
 
     return this.sendKriboEmail({
       to: input.to,
@@ -317,7 +340,9 @@ class EnvironmentEmailService implements EmailService {
     });
   }
 
-  public async sendHostAvailabilityReminderEmail(input: SendHostAvailabilityReminderEmailInput): Promise<EmailSendResult> {
+  public async sendHostAvailabilityReminderEmail(
+    input: SendHostAvailabilityReminderEmailInput,
+  ): Promise<EmailSendResult> {
     const manageAvailabilityLink = buildHostLoginRedirectUrl('/host/properties/manage');
     const propertyLines = formatPropertyAvailabilityLines(input.properties);
 
@@ -346,8 +371,9 @@ class EnvironmentEmailService implements EmailService {
     });
   }
 
-  public async sendAdminManualPayoutRequestEmail(input: SendAdminManualPayoutRequestEmailInput): Promise<EmailSendResult> {
-
+  public async sendAdminManualPayoutRequestEmail(
+    input: SendAdminManualPayoutRequestEmailInput,
+  ): Promise<EmailSendResult> {
     return this.sendKriboEmail({
       to: input.to,
       subject: `Manual payout required for booking ${input.bookingId}`,
@@ -384,9 +410,14 @@ class EnvironmentEmailService implements EmailService {
     });
   }
 
-  public async sendHostOnboardingRejectedEmail(input: SendHostOnboardingRejectedEmailInput): Promise<EmailSendResult> {
+  public async sendHostOnboardingRejectedEmail(
+    input: SendHostOnboardingRejectedEmailInput,
+  ): Promise<EmailSendResult> {
     const loginLink = buildHostLoginRedirectUrl('/host/onboarding');
-    const safeReason = escapeHtml(input.reasonNote.trim() || 'No specific reason was provided. Please review your details and try again.');
+    const safeReason = escapeHtml(
+      input.reasonNote.trim() ||
+        'No specific reason was provided. Please review your details and try again.',
+    );
 
     return this.sendKriboEmail({
       to: input.to,
@@ -410,8 +441,12 @@ class EnvironmentEmailService implements EmailService {
     });
   }
 
-  public async sendAdminHostOnboardingSubmittedEmail(input: SendAdminHostOnboardingSubmittedEmailInput): Promise<EmailSendResult> {
-    const reviewLink = buildAdminLoginRedirectUrl('/admin/onboarding-reviews?role=host&status=pending');
+  public async sendAdminHostOnboardingSubmittedEmail(
+    input: SendAdminHostOnboardingSubmittedEmailInput,
+  ): Promise<EmailSendResult> {
+    const reviewLink = buildAdminLoginRedirectUrl(
+      '/admin/onboarding-reviews?role=host&status=pending',
+    );
 
     return this.sendKriboEmail({
       to: input.to,
@@ -438,7 +473,9 @@ class EnvironmentEmailService implements EmailService {
     });
   }
 
-  public async sendHostOnboardingApprovedEmail(input: SendHostOnboardingApprovedEmailInput): Promise<EmailSendResult> {
+  public async sendHostOnboardingApprovedEmail(
+    input: SendHostOnboardingApprovedEmailInput,
+  ): Promise<EmailSendResult> {
     const dashboardLink = buildHostLoginRedirectUrl('/host/dashboard');
 
     return this.sendKriboEmail({
